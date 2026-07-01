@@ -36,37 +36,33 @@ def compute_psnr(img_gt, img_pred):
     mse = np.mean((img_gt - img_pred) ** 2)
     if mse == 0:
         return float('inf')
-    max_val = np.max(img_gt)
-    if max_val == 0:
-        max_val = 1.0
+    # Cho pha wrapped, dải giá trị tối đa là 2*pi
+    max_val = 2 * np.pi
     return 20 * np.log10(max_val / np.sqrt(mse))
 
-def align_phase(phase_gt, phase_pred):
+def align_phase_wrapped(phase_gt_wrapped, phase_pred_wrapped):
     """
-    Bù lệch pha toàn cục giữa pha khôi phục và pha nhãn Ground Truth 
-    trước khi tính sai số.
+    Bù lệch pha toàn cục cho pha quấn (wrapped phase) trước khi tính sai số.
     """
-    U_gt = np.exp(1j * phase_gt)
-    U_pred = np.exp(1j * phase_pred)
+    U_gt = np.exp(1j * phase_gt_wrapped)
+    U_pred = np.exp(1j * phase_pred_wrapped)
     
     # Ước lượng độ lệch pha toàn cục bằng tích vô hướng phức
     delta_psi = np.angle(np.sum(U_gt * np.conj(U_pred)))
     
     # Bù pha
-    phase_pred_aligned = phase_pred + delta_psi
+    phase_pred_aligned = phase_pred_wrapped + delta_psi
     
     # Đưa pha về khoảng [-pi, pi]
-    phase_pred_aligned = np.angle(np.exp(1j * phase_pred_aligned))
-    
-    return phase_pred_aligned
+    return np.angle(np.exp(1j * phase_pred_aligned))
 
 def evaluate():
     args = parse_args()
     config = load_config(args.config)
     
     device = torch.device(config['cloud']['device'] if torch.cuda.is_available() else "cpu")
-    print(f"🖥️ Sử dụng thiết bị: {device} để chạy đánh giá.")
-    
+    print(f"🖥️ Sử dụng thiết bị: {device} để chạy đánh giá (Chế độ so sánh pha Wrapped).")
+        
     output_dir = config['paths']['output_dir']
     os.makedirs(output_dir, exist_ok=True)
     
@@ -79,7 +75,7 @@ def evaluate():
         data_dir=config['data']['raw_dir'] if dataset_mode == 'real' else None,
         num_samples=100 if dataset_mode == 'synthetic' else 50,
         image_size=(config['data']['image_height'], config['data']['image_width']),
-        seed=100 # Seed khác với train để độc lập dữ liệu
+        seed=100
     )
     
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
@@ -110,9 +106,9 @@ def evaluate():
             # Khôi phục trường sóng phức
             (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2)
             
-            # Chuyển dữ liệu về numpy để phân tích
-            phi_pred1 = phase1[0, 0].cpu().numpy()
-            amp_pred1 = amp1[0, 0].cpu().numpy()
+            # Chuyển dữ liệu về numpy
+            phi_pred = phase1[0, 0].cpu().numpy()
+            amp_pred = amp1[0, 0].cpu().numpy()
             
             # Xuất ma trận kết quả sang MATLAB (.mat) cho mẫu đầu tiên
             if idx == 0:
@@ -120,111 +116,128 @@ def evaluate():
                 mat_data = {
                     'hologram1': I1[0, 0].cpu().numpy(),
                     'hologram2': I2[0, 0].cpu().numpy(),
-                    'amplitude1': amp_pred1,
-                    'phase1': phi_pred1,
+                    'amplitude1': amp_pred,
+                    'phase1': phi_pred,
                     'kx1': k1[0, 0].item(),
                     'ky1': k1[0, 1].item()
                 }
                 
-                # Nếu là dữ liệu giả lập, lưu thêm pha nhãn Ground Truth
+                # Nếu là dữ liệu giả lập, lưu thêm pha nhãn Ground Truth (được quấn về [-pi, pi])
                 if dataset_mode == 'synthetic':
-                    mat_data['phase_gt'] = batch['phi_gt'][0, 0].cpu().numpy()
+                    phi_gt_unwrapped = batch['phi_gt'][0, 0].cpu().numpy()
+                    phi_gt_wrapped = np.angle(np.exp(1j * phi_gt_unwrapped))
+                    mat_data['phase_gt'] = phi_gt_wrapped
                     
                 sio.savemat(mat_path, mat_data)
                 print(f"💾 Đã lưu dữ liệu ma trận khôi phục mẫu đầu tiên vào: {mat_path} (Hỗ trợ MATLAB)")
             
             # Tính chỉ số định lượng nếu chạy trên dữ liệu giả lập (có Ground Truth)
             if dataset_mode == 'synthetic':
-                phi_gt = batch['phi_gt'][0, 0].cpu().numpy()
+                phi_gt_unwrapped = batch['phi_gt'][0, 0].cpu().numpy()
+                phi_gt_wrapped = np.angle(np.exp(1j * phi_gt_unwrapped))
                 
-                # Bù lệch pha toàn cục trước khi tính sai số
-                phi_pred1_aligned = align_phase(phi_gt, phi_pred1)
+                # Căn chỉnh pha quấn dự đoán với pha quấn Ground Truth
+                phi_pred_aligned = align_phase_wrapped(phi_gt_wrapped, phi_pred)
                 
-                mse = np.mean((phi_gt - phi_pred1_aligned) ** 2)
-                psnr = compute_psnr(phi_gt, phi_pred1_aligned)
+                mse = np.mean((phi_gt_wrapped - phi_pred_aligned) ** 2)
+                psnr = compute_psnr(phi_gt_wrapped, phi_pred_aligned)
                 
                 mse_list.append(mse)
                 psnr_list.append(psnr)
+            else:
+                phi_gt_wrapped = None
+                phi_pred_aligned = phi_pred
                 
-            # Trực quan hóa hình ảnh cho một số mẫu đầu tiên
+            # Trực quan hóa hình ảnh
             if idx < args.num_test:
                 visualize_sample(
                     idx,
                     I1[0, 0].cpu().numpy(),
                     I2[0, 0].cpu().numpy(),
-                    amp_pred1,
-                    phi_pred1,
-                    batch['phi_gt'][0, 0].cpu().numpy() if dataset_mode == 'synthetic' else None,
+                    amp_pred,
+                    phi_pred_aligned,
+                    phi_gt_wrapped,
                     output_dir
                 )
                 
-    if dataset_mode == 'synthetic':
-        print(f"📊 Kết quả đánh giá định lượng trên toàn bộ tập Test:")
+    if dataset_mode == 'synthetic' and len(mse_list) > 0:
+        print(f"📊 Kết quả đánh giá định lượng trên toàn bộ tập Test (Pha Wrapped):")
         print(f"   - Phase MSE Trung bình: {np.mean(mse_list):.6f}")
         print(f"   - Phase PSNR Trung bình: {np.mean(psnr_list):.2f} dB")
         
     print(f"🎨 Đã xuất các hình ảnh trực quan hóa vào thư mục: {output_dir}")
 
 def visualize_sample(sample_idx, I1, I2, amp, phase, phase_gt, output_dir):
-    """Vẽ biểu đồ so sánh chi tiết kết quả khôi phục pha"""
+    """
+    Vẽ bảng so sánh kết quả 2x3 hiển thị các bản đồ pha wrapped.
+    """
     cols = 4 if phase_gt is not None else 3
     fig, axes = plt.subplots(2, cols, figsize=(15, 7))
     
-    # Dòng 1: Góc chiếu thứ nhất và kết quả khôi phục
+    # ---------------- DÒNG 1: KẾT QUẢ KHÔI PHỤC ----------------
+    # 1. Hologram góc 1
     axes[0, 0].imshow(I1, cmap='gray')
     axes[0, 0].set_title("Input Hologram 1")
     axes[0, 0].axis('off')
     
+    # 2. Biên độ khôi phục
     im_amp = axes[0, 1].imshow(amp, cmap='jet')
-    axes[0, 1].set_title("Reconstructed Amp")
+    axes[0, 1].set_title("Reconstructed Amplitude")
     axes[0, 1].axis('off')
     fig.colorbar(im_amp, ax=axes[0, 1])
     
-    # Bù lệch pha toàn cục cho ảnh vẽ
-    if phase_gt is not None:
-        phase_aligned = align_phase(phase_gt, phase)
-    else:
-        phase_aligned = phase
-        
-    im_phase = axes[0, 2].imshow(phase_aligned, cmap='jet')
-    axes[0, 2].set_title("Reconstructed Phase")
+    # 3. Pha quấn khôi phục (Reconstructed Wrapped Phase)
+    im_phase = axes[0, 2].imshow(phase, cmap='jet', vmin=-np.pi, vmax=np.pi)
+    axes[0, 2].set_title("Reconstructed Phase (Wrapped)")
     axes[0, 2].axis('off')
     fig.colorbar(im_phase, ax=axes[0, 2])
     
     if phase_gt is not None:
-        im_gt = axes[0, 3].imshow(phase_gt, cmap='jet')
-        axes[0, 3].set_title("Ground Truth Phase")
+        # 4. Pha Ground Truth Quấn (Ground Truth Wrapped Phase)
+        im_gt = axes[0, 3].imshow(phase_gt, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[0, 3].set_title("Ground Truth Phase (Wrapped)")
         axes[0, 3].axis('off')
         fig.colorbar(im_gt, ax=axes[0, 3])
         
-    # Dòng 2: Góc chiếu thứ hai và bản đồ lỗi
+    # ---------------- DÒNG 2: ĐỐI CHỨNG VÀ ĐÁNH GIÁ ----------------
+    # 5. Hologram góc 2
     axes[1, 0].imshow(I2, cmap='gray')
     axes[1, 0].set_title("Input Hologram 2")
     axes[1, 0].axis('off')
     
-    # Vẽ phổ Fourier của Hologram 1 để đối chứng
+    # 6. Phổ Fourier của Hologram 1
     I1_fft = np.log(np.abs(np.fft.fftshift(np.fft.fft2(I1))) + 1e-3)
     axes[1, 1].imshow(I1_fft, cmap='viridis')
     axes[1, 1].set_title("Hologram Fourier Spectrum")
     axes[1, 1].axis('off')
     
-    # Bản đồ lỗi (Error Map)
     if phase_gt is not None:
-        error_map = np.abs(phase_gt - phase_aligned)
-        im_err = axes[1, 2].imshow(error_map, cmap='hot')
-        axes[1, 2].set_title("Phase Error Map")
+        # 7. Bản đồ lỗi pha quấn (Phase Error Map)
+        # Để đo lỗi pha quấn chính xác, ta lấy độ lệch pha phức để tránh bước nhảy 2pi
+        error_map = np.abs(np.angle(np.exp(1j * (phase_gt - phase))))
+        im_err = axes[1, 2].imshow(error_map, cmap='hot', vmin=0, vmax=np.pi)
+        axes[1, 2].set_title("Wrapped Phase Error Map")
         axes[1, 2].axis('off')
         fig.colorbar(im_err, ax=axes[1, 2])
         
-        # Plot profile cắt ngang pha
+        # 8. Đồ thị Profile cắt ngang của pha quấn
         mid_row = phase_gt.shape[0] // 2
-        axes[1, 3].plot(phase_gt[mid_row, :], 'k-', label='GT')
-        axes[1, 3].plot(phase_aligned[mid_row, :], 'r--', label='Reconstructed')
+        axes[1, 3].plot(phase_gt[mid_row, :], 'k-', label='Ground Truth')
+        axes[1, 3].plot(phase[mid_row, :], 'r--', label='Reconstructed')
         axes[1, 3].set_title("Phase Mid-line Profile")
         axes[1, 3].legend()
         axes[1, 3].grid(True)
     else:
-        axes[1, 2].axis('off')
+        # Đối với dữ liệu thực tế (Không có Ground Truth)
+        # 7. Đồ thị Profile cắt ngang của pha quấn
+        mid_row = phase.shape[0] // 2
+        axes[1, 2].plot(phase[mid_row, :], 'b-', label='Phase Profile')
+        axes[1, 2].set_title("Wrapped Phase Mid-line Profile")
+        axes[1, 2].legend()
+        axes[1, 2].grid(True)
+        
+        # 8. Tắt trục còn lại
+        axes[1, 3].axis('off')
         
     plt.tight_layout()
     save_path = os.path.join(output_dir, f"visual_evaluation_sample_{sample_idx}.png")

@@ -23,20 +23,27 @@ def main():
     data = sio.loadmat(args.mat_file)
     
     # Kiểm tra các khóa trong file .mat
-    required_keys = ['amplitude1', 'phase1', 'hologram1']
+    required_keys = ['amplitude1', 'hologram1']
     for key in required_keys:
         if key not in data:
             print(f"❌ Sai: File .mat thiếu dữ liệu khóa quan trọng: '{key}'")
             return
             
     amp = data['amplitude1']
-    phase = data['phase1']
     holo = data['hologram1']
     
-    has_gt = 'phase_gt' in data
-    cols = 4 if has_gt else 3
+    # Lấy pha quấn và pha mở
+    phase_wrapped = data.get('phase1_wrapped', data.get('phase1', None))
+    phase_unwrapped = data.get('phase1_unwrapped', None)
     
-    fig, axes = plt.subplots(1, cols, figsize=(15, 4.5))
+    if phase_wrapped is None:
+        print("❌ Sai: Không tìm thấy dữ liệu pha trong file .mat")
+        return
+        
+    has_gt = 'phase_gt' in data
+    cols = 4 if (has_gt or phase_unwrapped is not None) else 3
+    
+    fig, axes = plt.subplots(1, cols, figsize=(16, 4.5))
     
     # 1. Vẽ Hologram cường độ thô
     axes[0].imshow(holo, cmap='gray')
@@ -49,19 +56,25 @@ def main():
     axes[1].axis('off')
     fig.colorbar(im_amp, ax=axes[1])
     
-    # 3. Vẽ Pha khôi phục
-    im_phase = axes[2].imshow(phase, cmap='jet')
-    axes[2].set_title("Reconstructed Phase")
+    # 3. Vẽ Pha quấn
+    im_phase_wrap = axes[2].imshow(phase_wrapped, cmap='jet')
+    axes[2].set_title("Reconstructed Wrapped Phase")
     axes[2].axis('off')
-    fig.colorbar(im_phase, ax=axes[2])
+    fig.colorbar(im_phase_wrap, ax=axes[2])
     
-    # 4. Vẽ Pha Ground Truth nếu có
-    if has_gt:
-        phase_gt = data['phase_gt']
-        im_gt = axes[3].imshow(phase_gt, cmap='jet')
-        axes[3].set_title("Ground Truth Phase")
-        axes[3].axis('off')
-        fig.colorbar(im_gt, ax=axes[3])
+    # 4. Vẽ Pha mở (hoặc Ground Truth nếu không có pha mở)
+    if cols == 4:
+        if phase_unwrapped is not None:
+            im_phase_unwrap = axes[3].imshow(phase_unwrapped, cmap='jet')
+            axes[3].set_title("Reconstructed Unwrapped Phase")
+            axes[3].axis('off')
+            fig.colorbar(im_phase_unwrap, ax=axes[3])
+        elif has_gt:
+            phase_gt = data['phase_gt']
+            im_gt = axes[3].imshow(phase_gt, cmap='jet')
+            axes[3].set_title("Ground Truth Phase")
+            axes[3].axis('off')
+            fig.colorbar(im_gt, ax=axes[3])
         
     plt.tight_layout()
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
