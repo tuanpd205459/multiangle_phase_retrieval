@@ -1,9 +1,15 @@
 import os
+import sys
 import argparse
 import yaml
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam
+
+# Thêm thư mục gốc của dự án vào sys.path để chạy từ bất kỳ đâu không bị lỗi import src
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 # Nạp các module từ thư mục src
 from src.dataset import MultiAngleHologramDataset
