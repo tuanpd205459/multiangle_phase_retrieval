@@ -6,28 +6,53 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80):
+def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80, thresh_ratio=0.85):
     """
-    Ước lượng tự động tần số sóng mang (kx, ky) của hologram bằng cách tìm đỉnh
-    của búp sóng bậc +1 trong miền Fourier 2D (tránh vùng DC ở tâm).
+    Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel của hologram
+    bằng phương pháp Trọng tâm Năng lượng (Centroid/Center of Mass) của búp sóng +1.
+    Giúp chống nhiễu và xử lý chính xác khi phổ bị lan rộng (broadened).
     """
     H, W = I.shape
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     I_fft_amp = np.abs(I_fft)
     
-    y_grid, x_grid = np.ogrid[-H//2:H//2, -W//2:W//2]
-    distance = np.sqrt(x_grid**2 + y_grid**2)
+    # 1. Tạo lưới tọa độ pixel 2D
+    y_coords = np.arange(H)
+    x_coords = np.arange(W)
+    X, Y = np.meshgrid(x_coords, y_coords)
     
-    mask = (distance >= search_radius_min) & (distance <= search_radius_max)
-    masked_amp = I_fft_amp * mask
-    masked_amp[H//2:, :] = 0 # Chỉ tìm ở nửa trên
+    # 2. Tính khoảng cách tới tâm DC
+    dist_from_dc = np.sqrt((X - W//2)**2 + (Y - H//2)**2)
     
-    max_idx = np.argmax(masked_amp)
-    peak_y, peak_x = np.unravel_index(max_idx, masked_amp.shape)
+    # 3. Tạo mặt nạ vùng tìm kiếm (nửa trên, loại trừ búp trung tâm DC)
+    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max) & (Y < H//2)
+    masked_amp = I_fft_amp * search_mask
     
-    ky = float(peak_y - H//2)
-    kx = float(peak_x - W//2)
+    # 4. Tìm giá trị cực đại trong vùng tìm kiếm
+    max_val = np.max(masked_amp)
+    if max_val == 0:
+        return 0.0, 0.0
+        
+    # 5. Lọc ngưỡng: chỉ giữ lại vùng lõi có năng lượng cao nhất (mặc định >= 85% max)
+    threshold = thresh_ratio * max_val
+    high_energy_mask = (masked_amp >= threshold) & search_mask
     
+    # 6. Tính trọng tâm (Center of Mass) của đám mây phổ
+    weights = masked_amp[high_energy_mask]
+    total_weight = np.sum(weights)
+    
+    if total_weight == 0:
+        # Dự phòng nếu lỗi
+        max_idx = np.argmax(masked_amp)
+        peak_y, peak_x = np.unravel_index(max_idx, masked_amp.shape)
+        ky = float(peak_y - H//2)
+        kx = float(peak_x - W//2)
+    else:
+        centroid_y = np.sum(Y[high_energy_mask] * weights) / total_weight
+        centroid_x = np.sum(X[high_energy_mask] * weights) / total_weight
+        ky = float(centroid_y - H//2)
+        kx = float(centroid_x - W//2)
+        
     return kx, ky
 
 def generate_synthetic_phase_cell(H, W, rng):
