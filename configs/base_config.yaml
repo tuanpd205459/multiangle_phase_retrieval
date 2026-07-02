@@ -6,7 +6,7 @@
 data:
   image_height: 256
   image_width: 256
-  filter_radius: 50          # Bán kính bộ lọc thông thấp miền Fourier (đơn vị pixel)
+  filter_radius: 30          # Bán kính bộ lọc thông thấp miền Fourier (đơn vị pixel)
   bit_depth_auto: true       # Tự động nhận diện độ sâu màu (8-bit hoặc 16-bit) để chuẩn hóa
   synthetic_data: false      # Sử dụng dữ liệu thực tế từ raw_dir
   raw_dir: "./data/raw"      # Đường dẫn chứa ảnh thực tế (.bmp, .tif, .png)
@@ -15,7 +15,7 @@ data:
 # Tham số Huấn luyện (Training Hyperparameters)
 train:
   batch_size: 8
-  epochs: 2
+  epochs: 250
   learning_rate: 0.001
   weight_decay: 0.0001
   val_split: 0.1
