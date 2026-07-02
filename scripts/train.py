@@ -15,6 +15,7 @@ if project_root not in sys.path:
 from src.dataset import MultiAngleHologramDataset
 from src.models.siamese import SiameseTeacherModel
 from src.losses import compute_total_loss
+from src.utils.dataset_visualizer import save_dataset_preview
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Huấn luyện mô hình Siamese Khôi phục Pha Tự Giám Sát")
@@ -55,6 +56,15 @@ def train():
         num_samples=3300 if dataset_mode == 'synthetic' else 3000, # Bổ sung thêm để cắt Val set
         image_size=(config['data']['image_height'], config['data']['image_width']),
         seed=config['train']['seed']
+    )
+    
+    # Trực quan hóa tập dữ liệu để kiểm tra trước khi training
+    preview_path = os.path.join(output_dir, "dataset_preview.png")
+    save_dataset_preview(
+        dataset=full_dataset,
+        output_path=preview_path,
+        num_samples=3,
+        filter_radius=config['data']['filter_radius']
     )
     
     # Chia tập dữ liệu thành Train và Validation (mặc định 90% / 10%)

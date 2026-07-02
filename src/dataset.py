@@ -10,34 +10,21 @@ def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80):
     """
     Ước lượng tự động tần số sóng mang (kx, ky) của hologram bằng cách tìm đỉnh
     của búp sóng bậc +1 trong miền Fourier 2D (tránh vùng DC ở tâm).
-    
-    I: numpy array [H, W] - hologram cường độ
-    search_radius_min: bán kính tối thiểu để tránh búp sóng DC ở tâm
-    search_radius_max: bán kính tối đa tìm kiếm sóng mang
     """
     H, W = I.shape
-    # 1. Biến đổi Fourier 2D và dịch tâm
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     I_fft_amp = np.abs(I_fft)
     
-    # 2. Tạo mặt nạ để lọc bỏ vùng DC ở tâm và các vùng biên quá xa
     y_grid, x_grid = np.ogrid[-H//2:H//2, -W//2:W//2]
     distance = np.sqrt(x_grid**2 + y_grid**2)
     
-    # Chỉ tìm kiếm trong dải tần số thích hợp của búp sóng +1
     mask = (distance >= search_radius_min) & (distance <= search_radius_max)
-    
-    # 3. Tìm vị trí đỉnh cường độ trong vùng tìm kiếm
     masked_amp = I_fft_amp * mask
-    
-    # Do đối xứng, búp sóng +1 và -1 sẽ đối xứng qua tâm. 
-    # Ta chọn búp sóng nằm ở nửa mặt phẳng trên (y < 0) để đồng nhất hướng
     masked_amp[H//2:, :] = 0 # Chỉ tìm ở nửa trên
     
     max_idx = np.argmax(masked_amp)
     peak_y, peak_x = np.unravel_index(max_idx, masked_amp.shape)
     
-    # Chuyển đổi tọa độ về dạng pixel dịch chuyển so với tâm DC (0,0)
     ky = float(peak_y - H//2)
     kx = float(peak_x - W//2)
     
@@ -45,9 +32,7 @@ def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80):
 
 def generate_synthetic_phase_cell(H, W, rng):
     """
-    Sinh pha giả lập mô phỏng các tế bào sinh học mượt mà.
-    Sử dụng tổng các đa thức Zernike bậc thấp cho quang sai nền
-    và các hàm Gauss ngẫu nhiên cho cấu trúc tế bào.
+    Sinh pha giả lập mô phỏng tế bào sinh học mượt mà (Zernike + Gauss).
     """
     y = np.linspace(-1, 1, H)
     x = np.linspace(-1, 1, W)
@@ -67,7 +52,7 @@ def generate_synthetic_phase_cell(H, W, rng):
         cy = rng.uniform(-0.4, 0.4)
         sigma_x = rng.uniform(0.12, 0.25)
         sigma_y = rng.uniform(0.12, 0.25)
-        height = rng.uniform(1.5, 5.0) * np.pi  # Pha cao từ 1.5pi đến 5pi
+        height = rng.uniform(1.5, 5.0) * np.pi
         
         g = height * np.exp(-(((X - cx)**2) / (2 * sigma_x**2) + ((Y - cy)**2) / (2 * sigma_y**2)))
         phi_cells += g
@@ -75,43 +60,71 @@ def generate_synthetic_phase_cell(H, W, rng):
     phi = phi_bg + phi_cells
     return phi.astype(np.float32)
 
-def generate_hologram_pair(phi, H, W, rng, noise_level=0.03):
+def generate_hologram_pair_realistic(phi, H, W, rng, noise_level=0.03, objective_na_radius=100):
     """
-    Sinh cặp hologram cường độ từ cùng một phân phối pha phi ở 2 góc chiếu khác nhau.
+    MÔ PHỎNG VẬT LÝ QUANG HỌC TIỆM CẬN THỰC NGHIỆM:
+    1. Giới hạn độ phân giải quang học bởi khẩu độ vật kính (Pupil function).
+    2. Hồ sơ chùm sáng Gaussian (Gaussian Beam Profile) không đều.
+    3. Hấp thụ biên độ tế bào không đồng nhất (Amplitude Absorption).
+    4. Sóng mang thập phân (Sub-pixel Carrier) gây rò rỉ phổ hình chữ nhật/sinc.
+    5. Hệ thống nhiễu hỗn hợp: Nhiễu Poisson (Shot noise) + Nhiễu Gauss (Read noise).
     """
-    # 1. Tạo lưới tọa độ miền thực
     y = np.arange(H)
     x = np.arange(W)
     X, Y = np.meshgrid(x, y)
     
-    # 2. Thiết lập sóng mang ngẫu nhiên cho 2 góc chiếu (đảm bảo búp sóng tách biệt miền Fourier)
-    # Góc 1: Thường nằm ở góc phần tư thứ nhất (kx > 0, ky < 0)
-    kx1 = rng.uniform(35.0, 50.0)
-    ky1 = rng.uniform(-45.0, -30.0)
+    # 1. Mô phỏng biên độ vật thể không đều (Vùng pha dày sẽ hấp thụ bớt ánh sáng)
+    # Tế bào thực tế có độ hấp thụ nhẹ khoảng 5% - 20% ở vùng nhân dày
+    A_obj = 1.0 - 0.15 * (phi - phi.min()) / (phi.max() - phi.min() + 1e-8)
+    U_obj_raw = A_obj * np.exp(1j * phi)
     
-    # Góc 2: Thường nằm ở góc phần tư thứ hai (kx < 0, ky < 0)
-    kx2 = rng.uniform(-50.0, -35.0)
-    ky2 = rng.uniform(-45.0, -30.0)
+    # 2. Mô phỏng giới hạn độ phân giải của Vật kính (Microscope Objective Pupil)
+    # Lọc thông thấp trường sóng vật thể trong miền Fourier trước khi cho giao thoa
+    U_obj_fft = np.fft.fftshift(np.fft.fft2(U_obj_raw))
+    y_grid, x_grid = np.ogrid[-H//2:H//2, -W//2:W//2]
+    dist_fft = np.sqrt(x_grid**2 + y_grid**2)
+    pupil_mask = (dist_fft <= objective_na_radius).astype(np.float32)
+    U_obj_fft_filtered = U_obj_fft * pupil_mask
+    U_obj = np.fft.ifft2(np.fft.ifftshift(U_obj_fft_filtered)) # Trường sóng vật thể thực tế bị giới hạn quang học
     
-    # Sóng tham chiếu R = exp(i * phase_carrier)
+    # 3. Hồ sơ cường độ chùm sáng Gaussian (Gaussian Beam Profile)
+    # Ánh sáng laser thực tế sáng ở tâm và mờ dần ra rìa ảnh
+    sigma_beam = 0.7 * min(H, W)
+    A_beam = np.exp(-((X - W/2)**2 + (Y - H/2)**2) / (2 * sigma_beam**2))
+    
+    # 4. Sóng mang sub-pixel ngẫu nhiên (Sub-pixel Carrier Frequencies)
+    kx1 = rng.uniform(35.2, 49.8) # Số thập phân gây rò rỉ phổ thực tế
+    ky1 = rng.uniform(-44.8, -30.2)
+    
+    kx2 = rng.uniform(-49.8, -35.2)
+    ky2 = rng.uniform(-44.8, -30.2)
+    
+    # 5. Sinh sóng tham chiếu phức có biên độ Gaussian
     phase_carrier1 = 2 * np.pi * (kx1 * X / W + ky1 * Y / H)
     phase_carrier2 = 2 * np.pi * (kx2 * X / W + ky2 * Y / H)
     
-    # Vật thể truyền qua thuần pha: U = exp(i * phi)
-    U_obj = np.exp(1j * phi)
+    # Sóng tham chiếu cũng đi qua profile chùm sáng Gaussian
+    R1 = A_beam * np.exp(1j * phase_carrier1)
+    R2 = A_beam * np.exp(1j * phase_carrier2)
     
-    R1 = np.exp(1j * phase_carrier1)
-    R2 = np.exp(1j * phase_carrier2)
+    # Nhân trường sóng vật thể với biên độ chùm sáng
+    U_obj_beam = U_obj * A_beam
     
-    # Cường độ giao thoa I = |U + R|^2
-    I1 = np.abs(U_obj + R1)**2
-    I2 = np.abs(U_obj + R2)**2
+    # 6. Giao thoa vật lý tạo hologram cường độ
+    I1 = np.abs(U_obj_beam + R1)**2
+    I2 = np.abs(U_obj_beam + R2)**2
     
-    # Thêm nhiễu Gauss mô phỏng camera thực tế
+    # 7. Mô phỏng nhiễu hỗn hợp thực tế:
+    # a) Nhiễu Poisson (Shot noise): Sai số tỉ lệ thuận với căn bậc hai của cường độ
+    shot_noise_scale = 0.015
+    I1 += rng.normal(0, shot_noise_scale * np.sqrt(np.clip(I1, 0, None)), size=I1.shape)
+    I2 += rng.normal(0, shot_noise_scale * np.sqrt(np.clip(I2, 0, None)), size=I2.shape)
+    
+    # b) Nhiễu đọc Gauss (Read noise): Nhiễu nền camera cố định
     I1 += rng.normal(0, noise_level, size=I1.shape)
     I2 += rng.normal(0, noise_level, size=I2.shape)
     
-    # Chuẩn hóa ảnh về dải [0, 1]
+    # Chuẩn hóa ảnh về dải [0, 1] như ảnh camera ghi nhận
     I1 = (I1 - I1.min()) / (I1.max() - I1.min() + 1e-8)
     I2 = (I2 - I2.min()) / (I2.max() - I2.min() + 1e-8)
     
@@ -120,8 +133,8 @@ def generate_hologram_pair(phi, H, W, rng, noise_level=0.03):
 
 class MultiAngleHologramDataset(Dataset):
     """
-    Bộ dữ liệu PyTorch hỗ trợ đồng thời sinh dữ liệu mô phỏng (Synthetic)
-    và đọc ảnh thực nghiệm thực tế (.bmp, .tif, .png) có tự động ước lượng sóng mang.
+    Bộ dữ liệu PyTorch hỗ trợ đồng thời sinh dữ liệu mô phỏng tiệm cận thực nghiệm
+    và đọc ảnh thực tế (.bmp, .tif, .png) có tự động ước lượng sóng mang.
     """
     def __init__(self, mode='synthetic', data_dir=None, num_samples=3000, 
                  image_size=(256, 256), seed=42, transform=None):
@@ -133,10 +146,8 @@ class MultiAngleHologramDataset(Dataset):
         
         if self.mode == 'synthetic':
             self.rng = np.random.default_rng(seed)
-            # Tạo sẵn các seed con cho từng mẫu để đảm bảo tính tái lập (reproducible)
             self.sample_seeds = self.rng.integers(0, 2**32 - 1, size=num_samples)
         else:
-            # Chế độ đọc dữ liệu thực tế
             if not data_dir or not os.path.exists(data_dir):
                 raise ValueError(f"Đường dẫn dữ liệu thực tế không hợp lệ: {data_dir}")
             self.pairs = self._find_real_pairs(data_dir)
@@ -145,13 +156,6 @@ class MultiAngleHologramDataset(Dataset):
             self.num_samples = len(self.pairs)
             
     def _find_real_pairs(self, data_dir):
-        """
-        Tìm và ghép cặp các ảnh hologram thực tế.
-        Quy tắc đặt tên file ảnh ghép cặp được định nghĩa:
-        - Mẫu: 'xxxx_angle1.png' và 'xxxx_angle2.png'
-        - Hoặc: 'xxxx_1.tif' và 'xxxx_2.tif'
-        - Hoặc: 'xxxx_goc1.bmp' và 'xxxx_goc2.bmp'
-        """
         extensions = ['*.bmp', '*.tif', '*.tiff', '*.png']
         all_files = []
         for ext in extensions:
@@ -161,9 +165,6 @@ class MultiAngleHologramDataset(Dataset):
         all_files = sorted(list(set(all_files)))
         pairs = []
         
-        # Mẫu regex nhận diện góc chiếu
-        # Group 1: tiền tố chung của mẫu (prefix)
-        # Group 2: chỉ số góc (1 hoặc 2, hoặc angle1/angle2, goc1/goc2)
         pattern = re.compile(r'^(.*?)(?:_angle|_goc|_)?([12])\.[a-zA-Z0-9]+$')
         
         prefix_dict = {}
@@ -177,14 +178,12 @@ class MultiAngleHologramDataset(Dataset):
                     prefix_dict[prefix] = {}
                 prefix_dict[prefix][angle] = fpath
                 
-        # Duyệt qua các prefix tìm được để ghép cặp
         for prefix, angles in prefix_dict.items():
             if 1 in angles and 2 in angles:
                 pairs.append((angles[1], angles[2]))
                 
-        # Nếu không tìm thấy cặp theo regex, tự động ghép các ảnh liên tiếp trong danh sách
         if len(pairs) == 0 and len(all_files) >= 2:
-            print("💡 Không tìm thấy hậu tố ghép cặp (_1/_2 hoặc _angle1/_angle2). Ghép cặp tuần tự các file ảnh...")
+            print("💡 Không tìm thấy hậu tố ghép cặp. Ghép cặp tuần tự các file ảnh...")
             for i in range(0, len(all_files) - 1, 2):
                 pairs.append((all_files[i], all_files[i+1]))
                 
@@ -195,22 +194,18 @@ class MultiAngleHologramDataset(Dataset):
         
     def __getitem__(self, idx):
         if self.mode == 'synthetic':
-            # Khởi tạo bộ sinh số ngẫu nhiên cục bộ cho từng mẫu để đảm bảo tính nhất quán
             seed = int(self.sample_seeds[idx])
             local_rng = np.random.default_rng(seed)
             
-            # Sinh pha vật thể giả lập
             phi = generate_synthetic_phase_cell(self.H, self.W, local_rng)
             
-            # Sinh cặp hologram và sóng mang
-            I1, I2, (kx1, ky1), (kx2, ky2) = generate_hologram_pair(phi, self.H, self.W, local_rng)
+            # Sử dụng hàm sinh hologram thực tế (realistic simulation)
+            I1, I2, (kx1, ky1), (kx2, ky2) = generate_hologram_pair_realistic(phi, self.H, self.W, local_rng)
             
-            # Đưa về Tensor PyTorch [1, H, W]
             I1_tensor = torch.from_numpy(I1).unsqueeze(0)
             I2_tensor = torch.from_numpy(I2).unsqueeze(0)
             phi_tensor = torch.from_numpy(phi).unsqueeze(0)
             
-            # Chuyển đổi tần số sóng mang thành Tensor
             k1_tensor = torch.tensor([kx1, ky1], dtype=torch.float32)
             k2_tensor = torch.tensor([kx2, ky2], dtype=torch.float32)
             
@@ -219,17 +214,14 @@ class MultiAngleHologramDataset(Dataset):
                 'I2': I2_tensor,
                 'k1': k1_tensor,
                 'k2': k2_tensor,
-                'phi_gt': phi_tensor # Dữ liệu nhãn chỉ dùng để tính toán chỉ số đánh giá (validation/test)
+                'phi_gt': phi_tensor
             }
         else:
-            # Chế độ đọc dữ liệu thực tế
             img1_path, img2_path = self.pairs[idx]
             
-            # Đọc ảnh cường độ không thay đổi bit depth (hỗ trợ tiff 16-bit)
             I1_raw = cv2.imread(img1_path, cv2.IMREAD_UNCHANGED)
             I2_raw = cv2.imread(img2_path, cv2.IMREAD_UNCHANGED)
             
-            # Đưa về kích thước chuẩn của hệ thống
             if I1_raw.shape != (self.H, self.W):
                 I1_raw = cv2.resize(I1_raw, (self.W, self.H), interpolation=cv2.INTER_AREA)
             if I2_raw.shape != (self.H, self.W):
@@ -238,14 +230,12 @@ class MultiAngleHologramDataset(Dataset):
             I1 = I1_raw.astype(np.float32)
             I2 = I2_raw.astype(np.float32)
             
-            # Chuẩn hóa ảnh dựa trên kiểu dữ liệu thực tế (8-bit hoặc 16-bit)
             max_val1 = 65535.0 if I1_raw.dtype == np.uint16 else 255.0
             max_val2 = 65535.0 if I2_raw.dtype == np.uint16 else 255.0
             
             I1 /= max_val1
             I2 /= max_val2
             
-            # Tự động ước lượng tần số sóng mang bằng biến đổi Fourier 2D
             kx1, ky1 = estimate_carrier_frequency(I1)
             kx2, ky2 = estimate_carrier_frequency(I2)
             
@@ -260,20 +250,15 @@ class MultiAngleHologramDataset(Dataset):
                 'I2': I2_tensor,
                 'k1': k1_tensor,
                 'k2': k2_tensor,
-                'phi_gt': torch.zeros_like(I1_tensor) # Thực tế không có nhãn pha
+                'phi_gt': torch.zeros_like(I1_tensor)
             }
 
-# ==============================================================================
-# CHẠY THỬ NGHIỆM ĐỂ KIỂM TRA CHỨC NĂNG
-# ==============================================================================
 if __name__ == "__main__":
-    print("⏳ Đang kiểm tra chức năng sinh dữ liệu giả lập...")
+    print("⏳ Đang kiểm tra chức năng sinh dữ liệu mô phỏng TIỆM CẬN THỰC NGHIỆM...")
     dataset = MultiAngleHologramDataset(mode='synthetic', num_samples=5, image_size=(256, 256))
     sample = dataset[0]
     
     print("✅ Kiểm tra thành công!")
     print(f"Hologram 1 shape: {sample['I1'].shape}, Dải giá trị: [{sample['I1'].min():.2f}, {sample['I1'].max():.2f}]")
-    print(f"Hologram 2 shape: {sample['I2'].shape}, Dải giá trị: [{sample['I2'].min():.2f}, {sample['I2'].max():.2f}]")
-    print(f"Sóng mang góc 1 (kx1, ky1): {sample['k1'].numpy()}")
-    print(f"Sóng mang góc 2 (kx2, ky2): {sample['k2'].numpy()}")
-    print(f"Pha Ground Truth shape: {sample['phi_gt'].shape}")
+    print(f"Hologram 2 shape: {sample['I2'].shape}")
+    print(f"Sóng mang thực tế (Góc lẻ thập phân): {sample['k1'].numpy()}")
