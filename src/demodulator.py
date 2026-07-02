@@ -68,8 +68,8 @@ class DifferentiableDemodulator(nn.Module):
         max_rx = torch.abs(kx).min() * 0.8
         rx = torch.minimum(rx, max_rx)
         
-        # Khoảng cách Elip chuẩn hóa
-        distance_ellipse = torch.sqrt((x_dist / rx)**2 + (y_dist / ry)**2)
+        # Khoảng cách Elip chuẩn hóa (thêm epsilon 1e-10 để tránh lỗi gradient bằng NaN tại tâm khi x_dist=y_dist=0)
+        distance_ellipse = torch.sqrt((x_dist / rx)**2 + (y_dist / ry)**2 + 1e-10)
         
         # Sử dụng Sigmoid để tạo độ mượt cho biên bộ lọc elip, temperature = 0.1
         temperature = 0.1
