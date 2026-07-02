@@ -266,6 +266,15 @@ class MultiAngleHologramDataset(Dataset):
             I1_raw = cv2.imread(img1_path, cv2.IMREAD_UNCHANGED)
             I2_raw = cv2.imread(img2_path, cv2.IMREAD_UNCHANGED)
             
+            if I1_raw is None or I2_raw is None:
+                raise FileNotFoundError(f"Không thể đọc ảnh từ: {img1_path} hoặc {img2_path}")
+            
+            # Chuyển đổi sang ảnh xám 1 kênh nếu ảnh thực tế là ảnh màu 3 kênh (RGB/BGR)
+            if len(I1_raw.shape) == 3:
+                I1_raw = cv2.cvtColor(I1_raw, cv2.COLOR_BGR2GRAY)
+            if len(I2_raw.shape) == 3:
+                I2_raw = cv2.cvtColor(I2_raw, cv2.COLOR_BGR2GRAY)
+            
             if I1_raw.shape != (self.H, self.W):
                 I1_raw = cv2.resize(I1_raw, (self.W, self.H), interpolation=cv2.INTER_AREA)
             if I2_raw.shape != (self.H, self.W):
