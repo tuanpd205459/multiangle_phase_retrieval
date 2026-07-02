@@ -75,7 +75,8 @@ def evaluate():
         data_dir=config['data']['raw_dir'] if dataset_mode == 'real' else None,
         num_samples=100 if dataset_mode == 'synthetic' else 50,
         image_size=(config['data']['image_height'], config['data']['image_width']),
-        seed=100
+        seed=100,
+        is_eval=True
     )
     
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)

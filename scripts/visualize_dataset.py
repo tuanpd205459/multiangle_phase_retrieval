@@ -36,7 +36,8 @@ def main():
         data_dir=config['data']['raw_dir'] if dataset_mode == 'real' else None,
         num_samples=args.num_samples,
         image_size=(config['data']['image_height'], config['data']['image_width']),
-        seed=config['train']['seed']
+        seed=config['train']['seed'],
+        is_eval=True
     )
     
     print(f"🖼️ Đang tạo ảnh trực quan hóa tập dữ liệu tại: {args.output}")

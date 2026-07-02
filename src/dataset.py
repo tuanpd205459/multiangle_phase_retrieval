@@ -162,12 +162,13 @@ class MultiAngleHologramDataset(Dataset):
     và đọc ảnh thực tế (.bmp, .tif, .png) có tự động ước lượng sóng mang.
     """
     def __init__(self, mode='synthetic', data_dir=None, num_samples=3000, 
-                 image_size=(256, 256), seed=42, transform=None):
+                 image_size=(256, 256), seed=42, transform=None, is_eval=False):
         self.mode = mode.lower()
         self.data_dir = data_dir
         self.num_samples = num_samples
         self.H, self.W = image_size
         self.transform = transform
+        self.is_eval = is_eval
         
         if self.mode == 'synthetic':
             self.rng = np.random.default_rng(seed)
@@ -175,12 +176,16 @@ class MultiAngleHologramDataset(Dataset):
         else:
             if not data_dir or not os.path.exists(data_dir):
                 raise ValueError(f"Đường dẫn dữ liệu thực tế không hợp lệ: {data_dir}")
-            self.pairs = self._find_real_pairs(data_dir)
-            if len(self.pairs) == 0:
-                print(f"⚠️ Cảnh báo: Không tìm thấy cặp ảnh hologram phù hợp trong {data_dir}!")
-            self.num_samples = len(self.pairs)
+            self.groups = self._find_real_groups(data_dir)
+            if len(self.groups) == 0:
+                print(f"⚠️ Cảnh báo: Không tìm thấy nhóm ảnh hologram phù hợp trong {data_dir}!")
+            self.num_samples = len(self.groups)
             
-    def _find_real_pairs(self, data_dir):
+    def _find_real_groups(self, data_dir):
+        """
+        Tìm và gom nhóm tất cả các ảnh có cùng tiền tố mẫu nhưng khác số thứ tự góc chiếu.
+        Ví dụ: 'sample_001_1.bmp', 'sample_001_2.bmp', 'sample_001_3.bmp' -> 1 nhóm 3 ảnh.
+        """
         extensions = ['*.bmp', '*.tif', '*.tiff', '*.png']
         all_files = []
         for ext in extensions:
@@ -188,9 +193,10 @@ class MultiAngleHologramDataset(Dataset):
             all_files.extend(glob.glob(os.path.join(data_dir, ext.upper())))
             
         all_files = sorted(list(set(all_files)))
-        pairs = []
+        groups = []
         
-        pattern = re.compile(r'^(.*?)(?:_angle|_goc|_)?([12])\.[a-zA-Z0-9]+$')
+        # Biểu thức tìm kiếm: nhóm các góc bằng số nguyên ở cuối (ví dụ _goc1, _angle2, _3)
+        pattern = re.compile(r'^(.*?)(?:_angle|_goc|_)?([0-9]+)\.[a-zA-Z0-9]+$')
         
         prefix_dict = {}
         for fpath in all_files:
@@ -200,19 +206,21 @@ class MultiAngleHologramDataset(Dataset):
                 prefix = match.group(1)
                 angle = int(match.group(2))
                 if prefix not in prefix_dict:
-                    prefix_dict[prefix] = {}
-                prefix_dict[prefix][angle] = fpath
+                    prefix_dict[prefix] = []
+                prefix_dict[prefix].append((angle, fpath))
                 
-        for prefix, angles in prefix_dict.items():
-            if 1 in angles and 2 in angles:
-                pairs.append((angles[1], angles[2]))
+        for prefix, files in prefix_dict.items():
+            if len(files) >= 2:
+                # Sắp xếp các ảnh trong nhóm theo thứ tự số góc chiếu tăng dần
+                files_sorted = [fpath for angle, fpath in sorted(files, key=lambda x: x[0])]
+                groups.append(files_sorted)
                 
-        if len(pairs) == 0 and len(all_files) >= 2:
-            print("💡 Không tìm thấy hậu tố ghép cặp. Ghép cặp tuần tự các file ảnh...")
+        if len(groups) == 0 and len(all_files) >= 2:
+            print("💡 Không tìm thấy hậu tố góc dạng số. Ghép cặp tuần tự các file ảnh...")
             for i in range(0, len(all_files) - 1, 2):
-                pairs.append((all_files[i], all_files[i+1]))
+                groups.append([all_files[i], all_files[i+1]])
                 
-        return pairs
+        return groups
         
     def __len__(self):
         return self.num_samples
@@ -242,7 +250,18 @@ class MultiAngleHologramDataset(Dataset):
                 'phi_gt': phi_tensor
             }
         else:
-            img1_path, img2_path = self.pairs[idx]
+            group = self.groups[idx]
+            
+            # Chọn 2 ảnh từ nhóm N ảnh
+            if self.is_eval:
+                # Trong chế độ đánh giá, cố định chọn 2 góc đầu tiên để đảm bảo tính nhất quán của kết quả
+                idx1, idx2 = 0, 1
+            else:
+                # Trong chế độ huấn luyện, ngẫu nhiên chọn 2 góc bất kỳ từ N góc của mẫu vật
+                idx1, idx2 = sorted(np.random.choice(len(group), size=2, replace=False))
+                
+            img1_path = group[idx1]
+            img2_path = group[idx2]
             
             I1_raw = cv2.imread(img1_path, cv2.IMREAD_UNCHANGED)
             I2_raw = cv2.imread(img2_path, cv2.IMREAD_UNCHANGED)
