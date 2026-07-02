@@ -74,9 +74,12 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         axes[i, 1].plot(peak_x1, peak_y1, 'rx', markersize=8, label='Carrier')
         
         # Vẽ mặt nạ elip bộ lọc thông thấp (Rx = 0.4 * R, Ry = 1.2 * R)
-        rx = filter_radius * 0.4
-        ry = filter_radius * 1.2
-        ellipse1 = Ellipse((peak_x1, peak_y1), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
+        # Giới hạn Rx tương tự mô hình để không chạm vào vệt sáng DC (x = cx)
+        rx1 = filter_radius * 0.4
+        max_rx1 = abs(k1[0]) * 0.8
+        rx1 = min(rx1, max_rx1)
+        ry1 = filter_radius * 1.2
+        ellipse1 = Ellipse((peak_x1, peak_y1), width=2*rx1, height=2*ry1, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
         axes[i, 1].add_patch(ellipse1)
         
         # --- Cột 3: Hologram 2 ---
@@ -100,7 +103,11 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         axes[i, 3].plot(peak_x2, peak_y2, 'rx', markersize=8)
         
         # Vẽ mặt nạ elip bộ lọc thông thấp
-        ellipse2 = Ellipse((peak_x2, peak_y2), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
+        rx2 = filter_radius * 0.4
+        max_rx2 = abs(k2[0]) * 0.8
+        rx2 = min(rx2, max_rx2)
+        ry2 = filter_radius * 1.2
+        ellipse2 = Ellipse((peak_x2, peak_y2), width=2*rx2, height=2*ry2, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
         axes[i, 3].add_patch(ellipse2)
         
         # --- Cột 5: Ground Truth Phase (nếu có) ---

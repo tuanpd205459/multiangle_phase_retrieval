@@ -63,6 +63,11 @@ class DifferentiableDemodulator(nn.Module):
         rx = torch.clamp(self.filter_radius_x, min=5.0)
         ry = torch.clamp(self.filter_radius_y, min=5.0)
         
+        # Đảm bảo Rx không vượt quá 80% khoảng cách ngang từ sóng mang đến tâm DC
+        # Điều này ngăn chặn tuyệt đối bộ lọc elip chạm vào vạch sáng đứng của phổ bậc 0 (DC) tại x = cx.
+        max_rx = torch.abs(kx).min() * 0.8
+        rx = torch.minimum(rx, max_rx)
+        
         # Khoảng cách Elip chuẩn hóa
         distance_ellipse = torch.sqrt((x_dist / rx)**2 + (y_dist / ry)**2)
         
