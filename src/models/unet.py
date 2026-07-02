@@ -80,10 +80,12 @@ class PhaseRefiningUNet(nn.Module):
         # 4. Tích chập đầu ra
         out = self.outc(u3)      # [B, 2, H, W]
 
-        # 5. Tái tạo lại trường sóng phức đầu ra từ 2 kênh dự đoán
+        # 5. Tái tạo lại trường sóng phức đầu ra dạng cộng hưởng dư (Residual Connection)
+        # Giúp mô hình bắt đầu từ trường giải điều chế thô U_rough (đã có cấu trúc tế bào)
+        # và chỉ học phần hiệu chỉnh nhiễu/nâng cao độ phân giải, ngăn sụt giảm biên độ về 0.
         real_out = out[:, 0:1, :, :]
         imag_out = out[:, 1:2, :, :]
-        U_refined = torch.complex(real_out, imag_out) # [B, 1, H, W]
+        U_refined = U_rough + torch.complex(real_out, imag_out) # [B, 1, H, W]
 
         return U_refined
 
