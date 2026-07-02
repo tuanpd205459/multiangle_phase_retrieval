@@ -87,8 +87,25 @@ def train():
     
     print(f"📊 Tập huấn luyện: {train_size} mẫu | Tập kiểm thử: {val_size} mẫu")
     
+    # Tính toán giá trị sóng mang trung bình làm khởi tạo vật lý tốt
+    print("📍 Đang tính toán sóng mang khởi tạo trung bình từ dataset...")
+    k1_list, k2_list = [], []
+    num_init = min(100, len(full_dataset))
+    for idx in range(num_init):
+        s = full_dataset[idx]
+        k1_list.append(s['k1'])
+        k2_list.append(s['k2'])
+    k1_init = torch.stack(k1_list).mean(dim=0).tolist()
+    k2_init = torch.stack(k2_list).mean(dim=0).tolist()
+    print(f"   - Khởi tạo k1 (góc 1): {k1_init}")
+    print(f"   - Khởi tạo k2 (góc 2): {k2_init}")
+
     # 2. Khởi tạo Mô hình Siamese Teacher
-    model = SiameseTeacherModel(filter_radius=config['data']['filter_radius']).to(device)
+    model = SiameseTeacherModel(
+        filter_radius=config['data']['filter_radius'],
+        k1_init=k1_init,
+        k2_init=k2_init
+    ).to(device)
     
     # 3. Khởi tạo Optimizer
     optimizer = Adam(
@@ -143,8 +160,13 @@ def train():
             # Chạy mô hình Siamese
             (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2)
             
-            # Tính toán hàm Loss
-            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
+            # Lấy các tham số sóng mang học được hiện tại từ model
+            B = I1.shape[0]
+            k1_learned = model.k1.unsqueeze(0).expand(B, -1)
+            k2_learned = model.k2.unsqueeze(0).expand(B, -1)
+            
+            # Tính toán hàm Loss sử dụng sóng mang học được
+            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1_learned, k2_learned, config)
             
             # Lan truyền ngược và tối ưu hóa
             loss.backward()
@@ -172,8 +194,15 @@ def train():
                 k1 = batch['k1'].to(device)
                 k2 = batch['k2'].to(device)
                 
+                # Chạy mô hình Siamese
                 (U1, _, _), (U2, _, _) = model(I1, k1, I2, k2)
-                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
+                
+                # Sử dụng sóng mang học được để tính Loss đánh giá
+                B = I1.shape[0]
+                k1_learned = model.k1.unsqueeze(0).expand(B, -1)
+                k2_learned = model.k2.unsqueeze(0).expand(B, -1)
+                
+                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1_learned, k2_learned, config)
                 val_loss_accum += val_loss_dict['total_loss']
                 
         avg_val_loss = val_loss_accum / len(val_loader)
@@ -186,10 +215,16 @@ def train():
             writer.add_scalar("Loss/Train_TV", avg_train_tv, epoch)
             writer.add_scalar("Loss/Val_Total", avg_val_loss, epoch)
             
-        # In thông tin tiến trình huấn luyện
+        # In thông tin tiến trình huấn luyện và các tham số học được
+        with torch.no_grad():
+            k1_print = model.k1.cpu().numpy()
+            k2_print = model.k2.cpu().numpy()
+            radius_print = model.demodulator.filter_radius.item()
+            
         print(f"Epoch [{epoch+1}/{epochs}] - "
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
-              f"Val Loss: {avg_val_loss:.4f}")
+              f"Val Loss: {avg_val_loss:.4f}\n"
+              f"   📎 Tham số học được: k1=[{k1_print[0]:.3f}, {k1_print[1]:.3f}] | k2=[{k2_print[0]:.3f}, {k2_print[1]:.3f}] | Filter Radius={radius_print:.3f}")
               
         # 7. Lưu trữ Checkpoint
         checkpoint_data = {

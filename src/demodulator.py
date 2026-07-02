@@ -14,9 +14,10 @@ class DifferentiableDemodulator(nn.Module):
     Sau đó, đưa sang miền Fourier để áp dụng bộ lọc thông thấp (low-pass filter) hình tròn
     để lọc lấy trường sóng phức vật thể U_demod.
     """
-    def __init__(self, filter_radius=50):
+    def __init__(self, filter_radius=50.0):
         super(DifferentiableDemodulator, self).__init__()
-        self.filter_radius = filter_radius
+        # Đăng ký filter_radius dưới dạng nn.Parameter để có thể học được
+        self.filter_radius = nn.Parameter(torch.tensor(float(filter_radius), dtype=torch.float32))
 
     def forward(self, I, kx, ky):
         """
@@ -57,8 +58,12 @@ class DifferentiableDemodulator(nn.Module):
         x_dist = mesh_x - W // 2
         distance = torch.sqrt(y_dist**2 + x_dist**2)
         
-        # Tạo mặt nạ lọc hình tròn
-        mask = (distance <= self.filter_radius).float().view(1, 1, H, W).to(device)
+        # Tạo mặt nạ lọc hình tròn mềm khả vi (Soft Sigmoid Filter Mask)
+        # Kẹp giá trị bán kính tối thiểu là 5.0 để tránh bán kính âm/quá nhỏ
+        radius = torch.clamp(self.filter_radius, min=5.0)
+        # Sử dụng Sigmoid để tạo độ mượt cho biên bộ lọc, temperature = 2.0
+        temperature = 2.0
+        mask = torch.sigmoid((radius - distance) / temperature).view(1, 1, H, W).to(device)
         I_fft_filtered = I_fft * mask
 
         # 5. Biến đổi Fourier ngược để thu được trường sóng phức đã giải điều chế

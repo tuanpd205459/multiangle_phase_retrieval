@@ -20,24 +20,29 @@ class SiameseTeacherModel(nn.Module):
     - Đưa 2 trường sóng thô qua mạng U-Net chung trọng số để tinh chỉnh biên độ và pha.
     - Xuất ra 2 trường sóng phức tinh chỉnh cùng với biên độ và pha tương ứng.
     """
-    def __init__(self, filter_radius=50):
+    def __init__(self, filter_radius=50.0, k1_init=[40.0, -30.0], k2_init=[-45.0, -35.0]):
         super(SiameseTeacherModel, self).__init__()
         
-        # 1. Module giải điều chế khả vi (Không chứa tham số cần học của mạng nơ-ron)
+        # 1. Module giải điều chế khả vi (chứa nn.Parameter filter_radius bên trong)
         self.demodulator = DifferentiableDemodulator(filter_radius=filter_radius)
         
-        # 2. Mạng U-Net chung trọng số (Shared Weights)
+        # 2. Tần số sóng mang là nn.Parameter để có thể tối ưu hóa/học được
+        self.k1 = nn.Parameter(torch.tensor(k1_init, dtype=torch.float32))
+        self.k2 = nn.Parameter(torch.tensor(k2_init, dtype=torch.float32))
+        
+        # 3. Mạng U-Net chung trọng số (Shared Weights)
         self.unet = PhaseRefiningUNet()
 
-    def forward_single_branch(self, I, k):
+    def forward_single_branch(self, I, k_param):
         """
-        Xử lý đơn nhánh (đối với một góc chiếu)
+        Xử lý đơn nhánh (đối với một góc chiếu) sử dụng tham số học được.
         I: Hologram [B, 1, H, W]
-        k: Tần số sóng mang [B, 2] (kx, ky)
+        k_param: nn.Parameter sóng mang học được [2] (kx, ky)
         """
-        # Tách kx và ky
-        kx = k[:, 0]
-        ky = k[:, 1]
+        B = I.shape[0]
+        # Mở rộng sóng mang học được theo kích thước Batch
+        kx = k_param[0].expand(B)
+        ky = k_param[1].expand(B)
         
         # 1. Giải điều chế khả vi miền Fourier
         U_rough = self.demodulator(I, kx, ky) # [B, 1, H, W] (phức)
@@ -54,30 +59,40 @@ class SiameseTeacherModel(nn.Module):
     def forward(self, I1, k1, I2, k2):
         """
         Xử lý song song hai nhánh Siamese cho hai góc chiếu khác nhau.
+        Nhận k1 và k2 từ ngoài vào để tương thích signature, nhưng thực tế sử dụng
+        tham số nn.Parameter tự học self.k1 và self.k2.
         """
-        # Nhánh 1: Góc chiếu thứ nhất
-        U1, amp1, phase1 = self.forward_single_branch(I1, k1)
+        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1
+        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1)
         
-        # Nhánh 2: Góc chiếu thứ hai
-        U2, amp2, phase2 = self.forward_single_branch(I2, k2)
+        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2
+        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2)
         
         return (U1, amp1, phase1), (U2, amp2, phase2)
 
 if __name__ == "__main__":
-    print("⏳ Đang kiểm tra mô hình Siamese...")
-    model = SiameseTeacherModel(filter_radius=50)
+    print("⏳ Đang kiểm tra mô hình Siamese với các tham số vật lý học được...")
+    # Khởi tạo model với các giá trị mặc định
+    model = SiameseTeacherModel(filter_radius=50.0, k1_init=[40.2, -30.1], k2_init=[-44.8, -35.2])
     
     # Tạo tensor giả lập cho 2 góc chiếu
     I1 = torch.rand(2, 1, 256, 256)
     I2 = torch.rand(2, 1, 256, 256)
     
-    k1 = torch.tensor([[40.0, -30.0], [40.0, -30.0]], requires_grad=True)
-    k2 = torch.tensor([[-45.0, -35.0], [-45.0, -35.0]], requires_grad=True)
+    k1_dummy = torch.zeros(2, 2) # Chỉ dùng để giữ cấu trúc tương thích
+    k2_dummy = torch.zeros(2, 2)
     
-    (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2)
+    (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1_dummy, I2, k2_dummy)
     
-    print("✅ Kiểm tra thành công!")
+    # Tính Loss giả lập và lan truyền ngược để kiểm tra gradient
+    loss = torch.mean(torch.abs(U1) + torch.abs(U2))
+    loss.backward()
+    
+    print("✅ Kiểm tra chạy thử thành công!")
     print(f"U1 shape: {U1.shape}, dtype: {U1.dtype}")
     print(f"U2 shape: {U2.shape}, dtype: {U2.dtype}")
-    print(f"Pha khôi phục 1 shape: {phase1.shape}")
-    print(f"Biên độ khôi phục 2 shape: {amp2.shape}")
+    print("\n📊 Kiểm tra tính toán Gradient trên các tham số vật lý học được:")
+    print(f"   - k1 value: {model.k1.detach().numpy()}, grad: {model.k1.grad.numpy()}")
+    print(f"   - k2 value: {model.k2.detach().numpy()}, grad: {model.k2.grad.numpy()}")
+    print(f"   - filter_radius value: {model.demodulator.filter_radius.item():.2f}, grad: {model.demodulator.filter_radius.grad.item():.6f}")
+
