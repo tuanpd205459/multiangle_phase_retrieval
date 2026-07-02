@@ -219,12 +219,13 @@ def train():
         with torch.no_grad():
             k1_print = model.k1.cpu().numpy()
             k2_print = model.k2.cpu().numpy()
-            radius_print = model.demodulator.filter_radius.item()
+            rx_print = model.demodulator.filter_radius_x.item()
+            ry_print = model.demodulator.filter_radius_y.item()
             
         print(f"Epoch [{epoch+1}/{epochs}] - "
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
               f"Val Loss: {avg_val_loss:.4f}\n"
-              f"   📎 Tham số học được: k1=[{k1_print[0]:.3f}, {k1_print[1]:.3f}] | k2=[{k2_print[0]:.3f}, {k2_print[1]:.3f}] | Filter Radius={radius_print:.3f}")
+              f"   📎 Tham số học được: k1=[{k1_print[0]:.3f}, {k1_print[1]:.3f}] | k2=[{k2_print[0]:.3f}, {k2_print[1]:.3f}] | Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
               
         # 7. Lưu trữ Checkpoint
         checkpoint_data = {

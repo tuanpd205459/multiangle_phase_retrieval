@@ -23,8 +23,13 @@ class SiameseTeacherModel(nn.Module):
     def __init__(self, filter_radius=50.0, k1_init=[40.0, -30.0], k2_init=[-45.0, -35.0]):
         super(SiameseTeacherModel, self).__init__()
         
-        # 1. Module giải điều chế khả vi (chứa nn.Parameter filter_radius bên trong)
-        self.demodulator = DifferentiableDemodulator(filter_radius=filter_radius)
+        # Khởi tạo bán kính elip ngang (Rx) và dọc (Ry) dựa trên filter_radius để tránh phá vỡ config
+        # Rx = 0.4 * filter_radius (khoảng 20px), Ry = 1.2 * filter_radius (khoảng 60px)
+        filter_radius_x = filter_radius * 0.4
+        filter_radius_y = filter_radius * 1.2
+        
+        # 1. Module giải điều chế khả vi (chứa nn.Parameter filter_radius_x và filter_radius_y bên trong)
+        self.demodulator = DifferentiableDemodulator(filter_radius_x=filter_radius_x, filter_radius_y=filter_radius_y)
         
         # 2. Tần số sóng mang là nn.Parameter để có thể tối ưu hóa/học được
         self.k1 = nn.Parameter(torch.tensor(k1_init, dtype=torch.float32))
@@ -94,5 +99,6 @@ if __name__ == "__main__":
     print("\n📊 Kiểm tra tính toán Gradient trên các tham số vật lý học được:")
     print(f"   - k1 value: {model.k1.detach().numpy()}, grad: {model.k1.grad.numpy()}")
     print(f"   - k2 value: {model.k2.detach().numpy()}, grad: {model.k2.grad.numpy()}")
-    print(f"   - filter_radius value: {model.demodulator.filter_radius.item():.2f}, grad: {model.demodulator.filter_radius.grad.item():.6f}")
+    print(f"   - filter_radius_x value: {model.demodulator.filter_radius_x.item():.2f}, grad: {model.demodulator.filter_radius_x.grad.item():.6f}")
+    print(f"   - filter_radius_y value: {model.demodulator.filter_radius_y.item():.2f}, grad: {model.demodulator.filter_radius_y.grad.item():.6f}")
 

@@ -14,10 +14,11 @@ class DifferentiableDemodulator(nn.Module):
     Sau đó, đưa sang miền Fourier để áp dụng bộ lọc thông thấp (low-pass filter) hình tròn
     để lọc lấy trường sóng phức vật thể U_demod.
     """
-    def __init__(self, filter_radius=50.0):
+    def __init__(self, filter_radius_x=20.0, filter_radius_y=60.0):
         super(DifferentiableDemodulator, self).__init__()
-        # Đăng ký filter_radius dưới dạng nn.Parameter để có thể học được
-        self.filter_radius = nn.Parameter(torch.tensor(float(filter_radius), dtype=torch.float32))
+        # Đăng ký bán kính elip ngang và dọc dạng nn.Parameter
+        self.filter_radius_x = nn.Parameter(torch.tensor(float(filter_radius_x), dtype=torch.float32))
+        self.filter_radius_y = nn.Parameter(torch.tensor(float(filter_radius_y), dtype=torch.float32))
 
     def forward(self, I, kx, ky):
         """
@@ -56,14 +57,18 @@ class DifferentiableDemodulator(nn.Module):
         # 4. Áp dụng bộ lọc thông thấp hình tròn tại tâm tần số (H//2, W//2)
         y_dist = mesh_y - H // 2
         x_dist = mesh_x - W // 2
-        distance = torch.sqrt(y_dist**2 + x_dist**2)
         
-        # Tạo mặt nạ lọc hình tròn mềm khả vi (Soft Sigmoid Filter Mask)
-        # Kẹp giá trị bán kính tối thiểu là 5.0 để tránh bán kính âm/quá nhỏ
-        radius = torch.clamp(self.filter_radius, min=5.0)
-        # Sử dụng Sigmoid để tạo độ mượt cho biên bộ lọc, temperature = 2.0
-        temperature = 2.0
-        mask = torch.sigmoid((radius - distance) / temperature).view(1, 1, H, W).to(device)
+        # Tạo mặt nạ lọc hình elip mềm khả vi (Soft Sigmoid Elliptical Filter Mask)
+        # Kẹp giá trị bán kính tối thiểu là 5.0 để tránh bán kính elip âm/quá nhỏ
+        rx = torch.clamp(self.filter_radius_x, min=5.0)
+        ry = torch.clamp(self.filter_radius_y, min=5.0)
+        
+        # Khoảng cách Elip chuẩn hóa
+        distance_ellipse = torch.sqrt((x_dist / rx)**2 + (y_dist / ry)**2)
+        
+        # Sử dụng Sigmoid để tạo độ mượt cho biên bộ lọc elip, temperature = 0.1
+        temperature = 0.1
+        mask = torch.sigmoid((1.0 - distance_ellipse) / temperature).view(1, 1, H, W).to(device)
         I_fft_filtered = I_fft * mask
 
         # 5. Biến đổi Fourier ngược để thu được trường sóng phức đã giải điều chế
@@ -84,7 +89,7 @@ if __name__ == "__main__":
     kx = torch.tensor([40.0, -45.0], requires_grad=True)
     ky = torch.tensor([-30.0, -35.0], requires_grad=True)
     
-    demod = DifferentiableDemodulator(filter_radius=50)
+    demod = DifferentiableDemodulator(filter_radius_x=20.0, filter_radius_y=60.0)
     U_demod = demod(I, kx, ky)
     
     # Tính một hàm mục tiêu đơn giản để thử nghiệm lan truyền ngược (Backward)
@@ -96,3 +101,5 @@ if __name__ == "__main__":
     print(f"Demodulated wave dtype: {U_demod.dtype}")
     print(f"Gradient of kx: {kx.grad.numpy()}")
     print(f"Gradient of ky: {ky.grad.numpy()}")
+    print(f"Gradient of filter_radius_x: {demod.filter_radius_x.grad.item():.6f}")
+    print(f"Gradient of filter_radius_y: {demod.filter_radius_y.grad.item():.6f}")

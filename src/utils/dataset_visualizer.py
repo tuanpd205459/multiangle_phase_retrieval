@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import torch
 
 def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
@@ -55,11 +56,16 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         if i == 0:
             axes[i, 0].set_title("Hologram 1 (Angle 1)", fontsize=12, pad=10)
             
+        # In tọa độ sóng mang của mẫu ra Console
+        print(f"   - Mẫu {i}: k1=[{k1[0]:.2f}, {k1[1]:.2f}] | k2=[{k2[0]:.2f}, {k2[1]:.2f}]")
+
         # --- Cột 2: Phổ Fourier 1 ---
         im_fft1 = axes[i, 1].imshow(I1_fft_log, cmap='viridis')
         axes[i, 1].axis('off')
         if i == 0:
-            axes[i, 1].set_title("Fourier Spectrum 1 (Log)", fontsize=12, pad=10)
+            axes[i, 1].set_title(f"Fourier 1 (Log)\nk1=({k1[0]:.2f}, {k1[1]:.2f})", fontsize=12, pad=10)
+        else:
+            axes[i, 1].set_title(f"k1=({k1[0]:.2f}, {k1[1]:.2f})", fontsize=10)
             
         # Vẽ tâm DC (màu xanh lá) và sóng mang (màu đỏ)
         axes[i, 1].plot(cx, cy, 'g+', markersize=8, label='DC')
@@ -67,10 +73,11 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y1 = cy + k1[1]
         axes[i, 1].plot(peak_x1, peak_y1, 'rx', markersize=8, label='Carrier')
         
-        # Vẽ vòng tròn bộ lọc thông thấp (đây là nơi búp sóng +1 được dịch về tâm và lọc)
-        # Center of filter circle on the raw FFT is at (cx + kx, cy + ky)
-        circle1 = plt.Circle((peak_x1, peak_y1), filter_radius, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 1].add_patch(circle1)
+        # Vẽ mặt nạ elip bộ lọc thông thấp (Rx = 0.4 * R, Ry = 1.2 * R)
+        rx = filter_radius * 0.4
+        ry = filter_radius * 1.2
+        ellipse1 = Ellipse((peak_x1, peak_y1), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 1].add_patch(ellipse1)
         
         # --- Cột 3: Hologram 2 ---
         axes[i, 2].imshow(I2, cmap='gray')
@@ -82,7 +89,9 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         im_fft2 = axes[i, 3].imshow(I2_fft_log, cmap='viridis')
         axes[i, 3].axis('off')
         if i == 0:
-            axes[i, 3].set_title("Fourier Spectrum 2 (Log)", fontsize=12, pad=10)
+            axes[i, 3].set_title(f"Fourier 2 (Log)\nk2=({k2[0]:.2f}, {k2[1]:.2f})", fontsize=12, pad=10)
+        else:
+            axes[i, 3].set_title(f"k2=({k2[0]:.2f}, {k2[1]:.2f})", fontsize=10)
             
         # Vẽ tâm DC (màu xanh lá) và sóng mang (màu đỏ)
         axes[i, 3].plot(cx, cy, 'g+', markersize=8)
@@ -90,9 +99,9 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y2 = cy + k2[1]
         axes[i, 3].plot(peak_x2, peak_y2, 'rx', markersize=8)
         
-        # Vẽ vòng tròn bộ lọc thông thấp
-        circle2 = plt.Circle((peak_x2, peak_y2), filter_radius, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 3].add_patch(circle2)
+        # Vẽ mặt nạ elip bộ lọc thông thấp
+        ellipse2 = Ellipse((peak_x2, peak_y2), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 3].add_patch(ellipse2)
         
         # --- Cột 5: Ground Truth Phase (nếu có) ---
         if cols == 5:
