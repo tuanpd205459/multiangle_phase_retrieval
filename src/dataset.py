@@ -195,8 +195,8 @@ class MultiAngleHologramDataset(Dataset):
         all_files = sorted(list(set(all_files)))
         groups = []
         
-        # Biểu thức tìm kiếm: nhóm các góc bằng số nguyên ở cuối (ví dụ _goc1, _angle2, _3)
-        pattern = re.compile(r'^(.*?)(?:_angle|_goc|_)?([0-9]+)\.[a-zA-Z0-9]+$')
+        # Biểu thức tìm kiếm: nhóm các góc bằng số nguyên ở cuối, hỗ trợ cả dấu ngoặc đơn dạng im3 (1).bmp
+        pattern = re.compile(r'^(.*?)(?:_angle|_goc|_|\s\(|\()([0-9]+)\)?\.[a-zA-Z0-9]+$')
         
         prefix_dict = {}
         for fpath in all_files:
