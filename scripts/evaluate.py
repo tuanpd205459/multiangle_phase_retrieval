@@ -236,9 +236,7 @@ def visualize_sample(sample_idx, I1, I2, amp, phase, phase_gt, output_dir):
         axes[1, 2].set_title("Wrapped Phase Mid-line Profile")
         axes[1, 2].legend()
         axes[1, 2].grid(True)
-        
-        # 8. Tắt trục còn lại
-        axes[1, 3].axis('off')
+        pass
         
     plt.tight_layout()
     save_path = os.path.join(output_dir, f"visual_evaluation_sample_{sample_idx}.png")
