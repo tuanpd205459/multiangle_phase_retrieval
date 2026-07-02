@@ -9,7 +9,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.dataset import MultiAngleHologramDataset
-from src.utils.dataset_visualizer import save_dataset_preview
+from src.utils.dataset_visualizer import save_dataset_preview, save_intermediate_steps_preview
 
 def main():
     parser = argparse.ArgumentParser(description="Trực quan hóa một số mẫu trong dataset và phổ Fourier để kiểm tra")
@@ -45,6 +45,15 @@ def main():
         dataset=dataset,
         output_path=args.output,
         num_samples=args.num_samples,
+        filter_radius=config['data']['filter_radius']
+    )
+    
+    steps_output = os.path.join(os.path.dirname(args.output), "intermediate_steps_preview.png")
+    print(f"🖼️ Đang tạo ảnh kiểm tra bước trung gian (Fourier demodulation) tại: {steps_output}")
+    save_intermediate_steps_preview(
+        dataset=dataset,
+        output_path=steps_output,
+        sample_idx=0,
         filter_radius=config['data']['filter_radius']
     )
     print("🎉 Hoàn tất!")

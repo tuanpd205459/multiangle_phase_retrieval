@@ -124,3 +124,108 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"📊 Đã tạo thành công ảnh kiểm tra dataset tại: {output_path}")
+
+def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_radius=50):
+    """
+    Trực quan hóa chi tiết các bước trung gian của quá trình giải điều chế vật lý 2D FFT
+    (trước khi đưa vào U-Net) cho cả 2 góc chiếu của một mẫu vật.
+    Giúp người dùng kiểm chứng pha thô và biên độ thô (điểm tựa baseline).
+    """
+    if len(dataset) <= sample_idx:
+        print(f"⚠️ Cảnh báo: sample_idx {sample_idx} vượt quá kích thước dataset.")
+        return
+        
+    sample = dataset[sample_idx]
+    I1 = sample['I1'].squeeze().numpy()
+    I2 = sample['I2'].squeeze().numpy()
+    k1 = sample['k1'].numpy() # [kx1, ky1]
+    k2 = sample['k2'].numpy() # [kx2, ky2]
+    
+    H, W = I1.shape
+    cx, cy = W // 2, H // 2
+    y_grid = np.arange(H)
+    x_grid = np.arange(W)
+    mesh_y, mesh_x = np.meshgrid(y_grid, x_grid, indexing='ij')
+    
+    fig, axes = plt.subplots(2, 5, figsize=(18, 7.5))
+    
+    # Danh sách dữ liệu cho 2 góc
+    angles_data = [
+        {'I': I1, 'k': k1, 'title_suffix': 'Angle 1'},
+        {'I': I2, 'k': k2, 'title_suffix': 'Angle 2'}
+    ]
+    
+    for i, data in enumerate(angles_data):
+        I = data['I']
+        k = data['k']
+        suffix = data['title_suffix']
+        
+        # 1. Phổ Fourier gốc (Log Amplitude)
+        I_fft_raw = np.fft.fftshift(np.fft.fft2(I))
+        I_fft_raw_log = np.log(np.abs(I_fft_raw) + 1e-6)
+        
+        # 2. Nhân dịch tần số vật lý: I_shifted = I * exp(-2i*pi*(kx*x/W + ky*y/H))
+        exp_shift = np.exp(-2j * np.pi * (k[0] * mesh_x / W + k[1] * mesh_y / H))
+        I_shifted = I.astype(np.complex64) * exp_shift
+        
+        # 3. Biến đổi sang miền tần số sau khi dịch chuyển
+        I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
+        
+        # 4. Áp dụng bộ lọc hình elip
+        rx = filter_radius * 0.4
+        max_rx = abs(k[0]) * 0.8
+        rx = min(rx, max_rx)
+        ry = filter_radius * 1.2
+        
+        x_dist = mesh_x - W // 2
+        y_dist = mesh_y - H // 2
+        distance_ellipse = np.sqrt((x_dist / rx)**2 + (y_dist / ry)**2 + 1e-10)
+        mask = 1.0 / (1.0 + np.exp(-(1.0 - distance_ellipse) / 0.1))
+        
+        I_fft_filtered = I_fft_shifted * mask
+        I_fft_filtered_log = np.log(np.abs(I_fft_filtered) + 1e-6)
+        
+        # 5. Biến đổi Fourier ngược thu được U_rough (trường phức thô)
+        U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_filtered))
+        amp_rough = np.abs(U_rough)
+        phase_rough = np.angle(U_rough)
+        
+        # --- Cột 1: Hologram gốc ---
+        axes[i, 0].imshow(I, cmap='gray')
+        axes[i, 0].axis('off')
+        axes[i, 0].set_title(f"Input Hologram ({suffix})", fontsize=11)
+        
+        # --- Cột 2: Phổ Fourier gốc (kèm elip đỏ) ---
+        axes[i, 1].imshow(I_fft_raw_log, cmap='viridis')
+        axes[i, 1].axis('off')
+        axes[i, 1].plot(cx, cy, 'g+', markersize=8) # DC center
+        peak_x = cx + k[0]
+        peak_y = cy + k[1]
+        axes[i, 1].plot(peak_x, peak_y, 'rx', markersize=8) # Carrier center
+        
+        ellipse = Ellipse((peak_x, peak_y), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 1].add_patch(ellipse)
+        axes[i, 1].set_title(f"Fourier + Ellipse filter\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
+        
+        # --- Cột 3: Phổ sau khi lọc và dịch về tâm DC ---
+        axes[i, 2].imshow(I_fft_filtered_log, cmap='viridis')
+        axes[i, 2].axis('off')
+        axes[i, 2].set_title("Filtered & Shifted Fourier", fontsize=10)
+        
+        # --- Cột 4: Biên độ thô giải điều chế ---
+        im_amp = axes[i, 3].imshow(amp_rough, cmap='jet')
+        axes[i, 3].axis('off')
+        axes[i, 3].set_title("Raw Amplitude (Baseline)", fontsize=10)
+        fig.colorbar(im_amp, ax=axes[i, 3], fraction=0.046, pad=0.04)
+        
+        # --- Cột 5: Pha thô giải điều chế (Wrapped) ---
+        im_phase = axes[i, 4].imshow(phase_rough, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[i, 4].axis('off')
+        axes[i, 4].set_title("Raw Wrapped Phase (Baseline)", fontsize=10)
+        fig.colorbar(im_phase, ax=axes[i, 4], fraction=0.046, pad=0.04)
+        
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"📊 Đã tạo thành công ảnh kiểm tra bước trung gian (Fourier demodulation) tại: {output_path}")
