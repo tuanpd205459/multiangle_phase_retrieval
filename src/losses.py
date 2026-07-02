@@ -31,13 +31,14 @@ def compute_physics_loss(U_pred, I_real, k, eps=1e-8):
     # 2. Tính hologram cường độ dự đoán
     I_pred = torch.abs(U_pred + R)**2
     
-    # 3. Chuẩn hóa I_pred về dải [0, 1] cho mỗi mẫu để khớp với I_real
-    I_pred_min = I_pred.view(B, -1).min(dim=1)[0].view(B, 1, 1, 1)
-    I_pred_max = I_pred.view(B, -1).max(dim=1)[0].view(B, 1, 1, 1)
-    I_pred_norm = (I_pred - I_pred_min) / (I_pred_max - I_pred_min + eps)
+    # 3. Khớp tỷ lệ trung bình (Global Scale Matching) thay vì Min-Max Normalization.
+    # Tránh hiện tượng bất biến quy mô (scale-invariance) khiến biên độ U bị triệt tiêu về 0 do weight decay.
+    # Tính toán hệ số tỷ lệ riêng cho từng mẫu trong Batch [B, 1, 1, 1].
+    scale = torch.mean(I_real, dim=(-2, -1), keepdim=True) / (torch.mean(I_pred, dim=(-2, -1), keepdim=True) + eps)
+    I_pred_scaled = I_pred * scale
     
     # 4. Tính toán sai lệch L1
-    return torch.mean(torch.abs(I_pred_norm - I_real))
+    return torch.mean(torch.abs(I_pred_scaled - I_real))
 
 def compute_complex_consistency_loss(U1, U2, eps=1e-8):
     """
