@@ -6,50 +6,89 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
+def _blank_dc_region(fft_amp, dc_radius=None, dc_stripe_width=10):
+    """
+    Xóa vùng bậc 0 (DC / zero-order) khỏi phổ biên độ FFT trước khi phân tích.
+
+    Hai thành phần cần xóa:
+      1. Vùng tròn quanh tâm (cx, cy) bán kính dc_radius:
+         Chứa toàn bộ năng lượng bậc 0 (DC + object DC + background).
+      2. Dải đứng |x - cx| < dc_stripe_width:
+         Do rò rỉ phổ (spectral leakage) của DC theo trục X khi cửa sổ không tuần hoàn.
+
+    Trả về fft_amp đã xóa vùng DC (bản copy, không thay đổi input).
+    """
+    H, W = fft_amp.shape
+    cx, cy = W // 2, H // 2
+
+    if dc_radius is None:
+        # Mặc định: loại bỏ 12% chiều rộng ảnh xung quanh tâm
+        dc_radius = max(int(min(H, W) * 0.12), 20)
+
+    y_coords = np.arange(H)
+    x_coords = np.arange(W)
+    X, Y = np.meshgrid(x_coords, y_coords)
+
+    dist_from_center = np.sqrt((X - cx)**2 + (Y - cy)**2)
+
+    # Mask vùng cần xóa: hình tròn DC + dải đứng
+    dc_circle  = dist_from_center <= dc_radius
+    dc_stripe  = np.abs(X - cx) < dc_stripe_width
+    dc_region  = dc_circle | dc_stripe
+
+    result = fft_amp.copy()
+    result[dc_region] = 0.0
+    return result
+
 def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, thresh_ratio=0.85):
     """
     Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel của hologram
     bằng phương pháp làm mịn phổ (Gaussian smoothing) và tính Trọng tâm Năng lượng.
-    Giúp chống nhiễu và loại bỏ các vạch sáng DC đứng để định vị chính xác tâm búp phổ +1.
+    Trước khi tìm kiếm, toàn bộ vùng bậc 0 (DC + dải đứng) bị xóa khỏi phổ
+    bằng _blank_dc_region() để tránh nhầm bậc +1 với DC leakage.
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     I_fft_amp = np.abs(I_fft)
-    
-    # 1. Làm mịn phổ biên độ bằng bộ lọc Gauss (sigma=5.0) để làm nhòa vệt sáng đứng của DC leakage
-    # và làm nổi bật vùng năng lượng rộng của búp phổ chữ nhật +1
-    I_fft_amp_smooth = ndimage.gaussian_filter(I_fft_amp, sigma=5.0)
-    
-    # 2. Tạo lưới tọa độ pixel 2D
+
+    # 1. Xóa hoàn toàn vùng DC trước mọi phân tích
+    I_fft_amp_no_dc = _blank_dc_region(I_fft_amp,
+                                       dc_radius=search_radius_min,
+                                       dc_stripe_width=10)
+
+    # 2. Làm mịn phổ đã xóa DC bằng Gaussian để làm nổi bật búp phổ +1
+    I_fft_amp_smooth = ndimage.gaussian_filter(I_fft_amp_no_dc, sigma=5.0)
+
+    # 3. Tạo lưới tọa độ pixel 2D
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
-    
-    # 3. Tính khoảng cách tới tâm DC
+
+    # 4. Vùng tìm kiếm: annulus [search_radius_min, search_radius_max], nửa bên phải
+    #    (Không cần loại thêm DC ở đây vì đã xóa rồi)
     dist_from_dc = np.sqrt((X - W//2)**2 + (Y - H//2)**2)
-    
-    # 4. Tạo mặt nạ vùng tìm kiếm (nửa trên, block vùng trung tâm DC và dải dọc tâm)
-    # Loại bỏ dải dọc |X - W//2| < 12 để tránh bị nhiễu dọc.
-    # Cố định tìm ở nửa bên phải (X - W//2 >= 12) để đảm bảo tính nhất quán.
-    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max) & (Y < H//2) & (X - W//2 >= 12)
-    
-    # Áp dụng mặt nạ lên phổ đã được làm mịn
+    search_mask = (
+        (dist_from_dc >= search_radius_min) &
+        (dist_from_dc <= search_radius_max) &
+        (X - W//2 >= 0)   # chỉ tìm nửa phải (kx > 0)
+    )
+
     masked_smooth = I_fft_amp_smooth * search_mask
-    
-    # 5. Tìm giá trị cực đại trong vùng phổ làm mịn
+
+    # 5. Tìm đỉnh trong vùng tìm kiếm
     max_val = np.max(masked_smooth)
     if max_val == 0:
         return 0.0, 0.0
-        
-    # 6. Tìm vùng ngưỡng năng lượng dựa trên phổ làm mịn
+
+    # 6. Ngưỡng năng lượng để tính trọng tâm
     threshold = thresh_ratio * max_val
     high_energy_mask = (masked_smooth >= threshold) & search_mask
-    
-    # 7. Tính trọng tâm (Center of Mass) dựa trên phổ gốc để giữ độ chính xác cao
-    weights = I_fft_amp[high_energy_mask]
+
+    # 7. Tính trọng tâm (Center of Mass) dựa trên phổ gốc (không smooth) để giữ độ chính xác
+    weights = I_fft_amp_no_dc[high_energy_mask]
     total_weight = np.sum(weights)
-    
+
     if total_weight == 0:
         max_idx = np.argmax(masked_smooth)
         peak_y, peak_x = np.unravel_index(max_idx, masked_smooth.shape)
@@ -60,20 +99,24 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, th
         centroid_x = np.sum(X[high_energy_mask] * weights) / total_weight
         ky = float(centroid_y - H//2)
         kx = float(centroid_x - W//2)
-        
+
     return kx, ky
 
 def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0, margin=5.0):
     """
-    Ước lượng kích thước bộ lọc HCN cần thiết để bao phủ toàn bộ búp phổ +1.
+    Ước lượng kích thước bộ lọc HCN cần thiết để bao phủ toàn bộ búp phổ +1,
+    đồng thời đảm bảo KHÔNG lấn vào vùng phổ bậc 0 (DC).
 
-    Ý tưởng:
-      1. Dịch phổ Fourier để đưa bậc +1 về tâm (DC) bằng nhân pha exp(-i*2pi*(kx*x/W + ky*y/H)).
-      2. Trong phổ đã dịch, đo vùng có năng lượng > energy_thresh * max_energy.
-      3. Lấy nửa chiều rộng (half-width) và nửa chiều cao (half-height) của vùng đó + margin.
+    Pipeline:
+      1. Nhân hologram với exp(-i*2pi*(kx*x/W + ky*y/H)) → dịch bậc +1 về tâm trong FFT.
+         Hệ quả: bậc 0 (DC) bị dịch đến (-kx, -ky) so với tâm.
+      2. Đo vùng có năng lượng > energy_thresh * max trong bán kính lobe_search_r quanh tâm,
+         loại trừ vùng lân cận vị trí DC sau shift (tại (-kx, -ky)).
+      3. Tính rx_est, ry_est từ vùng đo được.
+      4. Hard-cap rx < abs(kx) - dc_gap_x để cạnh hộp không chồng lên DC khi visualize.
 
     Trả về:
-      rx (float): Bán kính bộ lọc theo trục X (half-width)
+      rx (float): Bán kính bộ lọc theo trục X (half-width), không chồng DC
       ry (float): Bán kính bộ lọc theo trục Y (half-height)
     """
     H, W = I.shape
@@ -81,43 +124,55 @@ def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0
     x = np.arange(W)
     X, Y = np.meshgrid(x, y)
 
-    # 1. Dịch phổ về tâm: nhân hologram với exp(-i*2pi*(kx*x/W + ky*y/H))
-    phase = -2.0 * np.pi * (kx * X / W + ky * Y / H)
-    I_shifted_spatial = I * np.exp(1j * phase)
-
-    # 2. FFT và fftshift → bậc +1 nằm tại tâm (H//2, W//2)
-    I_fft = np.fft.fftshift(np.fft.fft2(I_shifted_spatial))
+    # 1. FFT trực tiếp (KHÔNG phase-shift) → bậc 0 ở tâm, bậc +1 ở (cx+kx, cy+ky)
+    I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
 
-    # 3. Xác định vùng tìm lobe +1: hình tròn nhỏ quanh tâm, tránh DC leakage
-    #    Sau khi shift, bậc +1 ở tâm; DC residual cũng ở tâm → lấy vùng trong r < kx*0.9
-    cx, cy = W // 2, H // 2
-    dist_center = np.sqrt((X - cx)**2 + (Y - cy)**2)
-    lobe_search_r = min(abs(kx), abs(ky) if abs(ky) > 5 else abs(kx)) * 0.9 if abs(ky) > 5 else abs(kx) * 0.9
-    lobe_search_r = max(lobe_search_r, 20.0)  # tối thiểu 20 pixel
-    lobe_mask = dist_center <= lobe_search_r
+    # 2. Xóa vùng DC trước mọi phân tích
+    amp_no_dc = _blank_dc_region(amp,
+                                  dc_radius=int(max(abs(kx), abs(ky)) * 0.5),
+                                  dc_stripe_width=10)
 
-    amp_in_lobe = amp * lobe_mask
+    cx, cy = W // 2, H // 2
+
+    # 3. Vùng tìm lobe +1: hình tròn quanh đỉnh sóng mang (cx+kx, cy+ky)
+    peak_cx = cx + kx
+    peak_cy = cy + ky
+    dist_from_peak = np.sqrt((X - peak_cx)**2 + (Y - peak_cy)**2)
+    lobe_search_r = max(abs(kx) * 0.6, 20.0)
+    lobe_mask = dist_from_peak <= lobe_search_r
+
+    amp_in_lobe = amp_no_dc * lobe_mask
     max_val = amp_in_lobe.max()
     if max_val == 0:
         return max(min_rx, abs(kx) * 0.5), min_ry
 
     # 4. Ngưỡng năng lượng để xác định vùng búp phổ
     threshold = energy_thresh * max_val
-    lobe_region = (amp_in_lobe >= threshold)
+    lobe_region = amp_in_lobe >= threshold
 
     if lobe_region.sum() == 0:
         return max(min_rx, abs(kx) * 0.5), min_ry
 
-    # 5. Đo half-width và half-height của vùng lobe
-    lobe_xs = X[lobe_region] - cx
-    lobe_ys = Y[lobe_region] - cy
+    # 5. Đo half-width và half-height của vùng lobe (so với đỉnh sóng mang)
+    lobe_xs = X[lobe_region] - peak_cx
+    lobe_ys = Y[lobe_region] - peak_cy
 
     rx_est = float(np.max(np.abs(lobe_xs))) + margin
     ry_est = float(np.max(np.abs(lobe_ys))) + margin
 
-    rx = max(rx_est, min_rx)
-    ry = max(ry_est, min_ry)
+    # 6. Hard-cap rx để cạnh hộp KHÔNG chồng lên DC (bậc 0 tại cx trong FFT gốc)
+    #    Cạnh trái hộp = peak_cx - rx = cx + kx - rx phải > cx → rx < kx - dc_gap_x
+    dc_gap_x = 12.0
+    max_rx_safe = max(abs(kx) - dc_gap_x, min_rx)
+    rx = min(max(rx_est, min_rx), max_rx_safe)
+
+    if abs(ky) > 10.0:
+        dc_gap_y = 12.0
+        max_ry_safe = max(abs(ky) - dc_gap_y, min_ry)
+        ry = min(max(ry_est, min_ry), max_ry_safe)
+    else:
+        ry = max(ry_est, min_ry)
 
     return rx, ry
 
