@@ -98,13 +98,14 @@ def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0
     H, W = I.shape
     cx, cy = W // 2, H // 2
     
-    # 1. FFT và tính phổ log mịn
+    # 1. FFT và tính phổ log mịn (dành cho phát hiện DC) và phổ biên độ mịn (dành cho loang búp phổ)
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
     spec = np.log(1.0 + amp + 1e-6)
     spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
+    amp_smooth = ndimage.gaussian_filter(amp, sigma=2.0)
     
-    # 2. Tạo Forbidden Zone quanh DC để tránh loang lấn vào DC
+    # 2. Tạo Forbidden Zone quanh DC để tránh loang lấn vào DC (dùng spec_smooth)
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
@@ -132,19 +133,21 @@ def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0
     # Vị trí hạt giống (seed)
     seed_x = int(np.clip(cx + kx, 0, W - 1))
     seed_y = int(np.clip(cy + ky, 0, H - 1))
-    peak_val = spec_smooth[seed_y, seed_x]
     
-    # 3. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized)
+    # 3. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized) trên phổ tuyến tính biên độ
+    # Biên độ tuyến tính giảm rất nhanh về 0 ở nền nhiễu nên không loang rò rỉ ra ngoài búp phổ
+    peak_amp = amp_smooth[seed_y, seed_x]
+    
     # Mask cho floodFill cần kích thước (H+2, W+2)
     ff_mask = np.zeros((H + 2, W + 2), dtype=np.uint8)
     ff_mask[1:-1, 1:-1] = forbidden_zone.astype(np.uint8)
     
-    # Cài đặt ngưỡng dừng loang (ví dụ: dừng khi biên độ giảm xuống 35% giá trị đỉnh)
-    alpha = 0.35
-    lo_diff = float(max(peak_val - (alpha * peak_val), 0.1))
-    up_diff = 999.0  # cho phép loang vào vùng sáng hơn thoải mái
+    # Ngưỡng dừng loang: dừng khi biên độ giảm xuống 10% biên độ đỉnh
+    alpha = 0.10
+    lo_diff = float((1.0 - alpha) * peak_amp)
+    up_diff = float(999.0 * peak_amp)  # cho phép loang vào vùng có biên độ cao hơn thoải mái
     
-    flood_img = spec_smooth.copy()
+    flood_img = amp_smooth.copy()
     try:
         cv2.floodFill(
             image=flood_img,
