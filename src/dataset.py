@@ -6,174 +6,198 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-def _blank_dc_region(fft_amp, dc_radius=None, dc_stripe_width=10):
-    """
-    Xóa vùng bậc 0 (DC / zero-order) khỏi phổ biên độ FFT trước khi phân tích.
-
-    Hai thành phần cần xóa:
-      1. Vùng tròn quanh tâm (cx, cy) bán kính dc_radius:
-         Chứa toàn bộ năng lượng bậc 0 (DC + object DC + background).
-      2. Dải đứng |x - cx| < dc_stripe_width:
-         Do rò rỉ phổ (spectral leakage) của DC theo trục X khi cửa sổ không tuần hoàn.
-
-    Trả về fft_amp đã xóa vùng DC (bản copy, không thay đổi input).
-    """
-    H, W = fft_amp.shape
-    cx, cy = W // 2, H // 2
-
-    if dc_radius is None:
-        # Mặc định: loại bỏ 12% chiều rộng ảnh xung quanh tâm
-        dc_radius = max(int(min(H, W) * 0.12), 20)
-
-    y_coords = np.arange(H)
-    x_coords = np.arange(W)
-    X, Y = np.meshgrid(x_coords, y_coords)
-
-    dist_from_center = np.sqrt((X - cx)**2 + (Y - cy)**2)
-
-    # Mask vùng cần xóa: hình tròn DC + dải đứng
-    dc_circle  = dist_from_center <= dc_radius
-    dc_stripe  = np.abs(X - cx) < dc_stripe_width
-    dc_region  = dc_circle | dc_stripe
-
-    result = fft_amp.copy()
-    result[dc_region] = 0.0
-    return result
-
 def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, thresh_ratio=0.85):
     """
-    Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel của hologram
-    bằng phương pháp làm mịn phổ (Gaussian smoothing) và tính Trọng tâm Năng lượng.
-    Trước khi tìm kiếm, toàn bộ vùng bậc 0 (DC + dải đứng) bị xóa khỏi phổ
-    bằng _blank_dc_region() để tránh nhầm bậc +1 với DC leakage.
+    Ước lượng tự động tần số sóng mang (kx, ky) sử dụng thuật toán tránh DC:
+      1. Tính phổ Log-amplitude mịn.
+      2. Tự động phát hiện vùng DC trong bán kính trung tâm r0=60 và phân ngưỡng Otsu.
+      3. Giãn nở vùng DC tạo Forbidden Zone (vùng cấm).
+      4. Tìm đỉnh có biên độ lớn nhất ngoài vùng cấm ở nửa bên phải của phổ (kx > 0).
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
+    cx, cy = W // 2, H // 2
+    
+    # Tính phổ Log-amplitude mịn
     I_fft = np.fft.fftshift(np.fft.fft2(I))
-    I_fft_amp = np.abs(I_fft)
-
-    # 1. Xóa hoàn toàn vùng DC trước mọi phân tích
-    I_fft_amp_no_dc = _blank_dc_region(I_fft_amp,
-                                       dc_radius=search_radius_min,
-                                       dc_stripe_width=10)
-
-    # 2. Làm mịn phổ đã xóa DC bằng Gaussian để làm nổi bật búp phổ +1
-    I_fft_amp_smooth = ndimage.gaussian_filter(I_fft_amp_no_dc, sigma=5.0)
-
-    # 3. Tạo lưới tọa độ pixel 2D
+    amp = np.abs(I_fft)
+    spec = np.log(1.0 + amp + 1e-6)
+    spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
+    
+    # Tạo lưới tọa độ
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
-
-    # 4. Vùng tìm kiếm: annulus [search_radius_min, search_radius_max], nửa bên phải
-    #    (Không cần loại thêm DC ở đây vì đã xóa rồi)
-    dist_from_dc = np.sqrt((X - W//2)**2 + (Y - H//2)**2)
-    search_mask = (
-        (dist_from_dc >= search_radius_min) &
-        (dist_from_dc <= search_radius_max) &
-        (X - W//2 >= 0)   # chỉ tìm nửa phải (kx > 0)
-    )
-
-    masked_smooth = I_fft_amp_smooth * search_mask
-
-    # 5. Tìm đỉnh trong vùng tìm kiếm
-    max_val = np.max(masked_smooth)
-    if max_val == 0:
-        return 0.0, 0.0
-
-    # 6. Ngưỡng năng lượng để tính trọng tâm
-    threshold = thresh_ratio * max_val
-    high_energy_mask = (masked_smooth >= threshold) & search_mask
-
-    # 7. Tính trọng tâm (Center of Mass) dựa trên phổ gốc (không smooth) để giữ độ chính xác
-    weights = I_fft_amp_no_dc[high_energy_mask]
-    total_weight = np.sum(weights)
-
-    if total_weight == 0:
-        max_idx = np.argmax(masked_smooth)
-        peak_y, peak_x = np.unravel_index(max_idx, masked_smooth.shape)
-        ky = float(peak_y - H//2)
-        kx = float(peak_x - W//2)
+    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    
+    # Bắt vùng DC tự động
+    r0 = 60
+    center_mask = dist_from_dc <= r0
+    center_spec = spec_smooth.copy()
+    center_spec[~center_mask] = 0
+    
+    # Chuẩn hóa để chạy ngưỡng Otsu
+    c_min = center_spec.min()
+    c_max = center_spec.max()
+    if c_max - c_min > 1e-8:
+        center_spec_gray = (center_spec - c_min) / (c_max - c_min)
+        center_spec_u8 = (center_spec_gray * 255).astype(np.uint8)
+        _, bw_dc = cv2.threshold(center_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bw_dc = bw_dc > 0
     else:
-        centroid_y = np.sum(Y[high_energy_mask] * weights) / total_weight
-        centroid_x = np.sum(X[high_energy_mask] * weights) / total_weight
-        ky = float(centroid_y - H//2)
-        kx = float(centroid_x - W//2)
-
+        bw_dc = dist_from_dc <= 20
+        
+    # Giãn nở vùng DC tạo Forbidden Zone để ngăn chặn triệt để lọt phổ vào DC
+    margin_dc = 10
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_dc + 1, 2 * margin_dc + 1))
+    forbidden_zone = cv2.dilate(bw_dc.astype(np.uint8), kernel) > 0
+    
+    # Chỉ tìm kiếm đỉnh bậc +1 ở nửa bên phải (X >= cx + 12 để tránh leakage trực tiếp)
+    search_space = spec_smooth.copy()
+    search_space[forbidden_zone] = 0
+    search_space[X < cx + 12] = 0  # Tránh DC cột trung tâm
+    
+    # Lọc theo annulus khoảng cách của búp phổ
+    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max)
+    search_space[~search_mask] = 0
+    
+    max_val = np.max(search_space)
+    if max_val == 0:
+        # Fallback nếu không có tín hiệu nào thỏa mãn
+        return float(search_radius_min + 10), 0.0
+        
+    max_idx = np.argmax(search_space)
+    py, px = np.unravel_index(max_idx, search_space.shape)
+    
+    # Tính trọng tâm xung quanh hạt nhân đỉnh này để đạt độ chính xác sub-pixel
+    local_r = 7
+    local_mask = (np.sqrt((X - px)**2 + (Y - py)**2) <= local_r) & search_mask & ~forbidden_zone
+    weights = amp[local_mask]
+    total_weight = np.sum(weights)
+    
+    if total_weight > 0:
+        centroid_y = np.sum(Y[local_mask] * weights) / total_weight
+        centroid_x = np.sum(X[local_mask] * weights) / total_weight
+        ky = float(centroid_y - cy)
+        kx = float(centroid_x - cx)
+    else:
+        ky = float(py - cy)
+        kx = float(px - cx)
+        
     return kx, ky
 
 def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0, margin=5.0):
     """
-    Ước lượng kích thước bộ lọc HCN cần thiết để bao phủ toàn bộ búp phổ +1,
-    đồng thời đảm bảo KHÔNG lấn vào vùng phổ bậc 0 (DC).
-
-    Pipeline:
-      1. Nhân hologram với exp(-i*2pi*(kx*x/W + ky*y/H)) → dịch bậc +1 về tâm trong FFT.
-         Hệ quả: bậc 0 (DC) bị dịch đến (-kx, -ky) so với tâm.
-      2. Đo vùng có năng lượng > energy_thresh * max trong bán kính lobe_search_r quanh tâm,
-         loại trừ vùng lân cận vị trí DC sau shift (tại (-kx, -ky)).
-      3. Tính rx_est, ry_est từ vùng đo được.
-      4. Hard-cap rx < abs(kx) - dc_gap_x để cạnh hộp không chồng lên DC khi visualize.
-
-    Trả về:
-      rx (float): Bán kính bộ lọc theo trục X (half-width), không chồng DC
-      ry (float): Bán kính bộ lọc theo trục Y (half-height)
+    Ước lượng kích thước bộ lọc (rx, ry) cho búp phổ +1 dựa trên thuật toán loang vùng (Region Growing):
+      1. Tạo Forbidden Zone (vùng cấm) quanh DC tương tự.
+      2. Loang vùng từ đỉnh sóng mang (cx+kx, cy+ky) sử dụng cv2.floodFill tốc độ cao.
+      3. Thực hiện morphology để làm mịn và điền lỗ cho búp phổ thu được.
+      4. Tính bounding box rx, ry và cap cứng cạnh trái để tránh đè lên DC.
     """
+    import scipy.ndimage as ndimage
     H, W = I.shape
-    y = np.arange(H)
-    x = np.arange(W)
-    X, Y = np.meshgrid(x, y)
-
-    # 1. FFT trực tiếp (KHÔNG phase-shift) → bậc 0 ở tâm, bậc +1 ở (cx+kx, cy+ky)
+    cx, cy = W // 2, H // 2
+    
+    # 1. FFT và tính phổ log mịn
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
-
-    # 2. Xóa vùng DC trước mọi phân tích
-    amp_no_dc = _blank_dc_region(amp,
-                                  dc_radius=int(max(abs(kx), abs(ky)) * 0.5),
-                                  dc_stripe_width=10)
-
-    cx, cy = W // 2, H // 2
-
-    # 3. Vùng tìm lobe +1: hình tròn quanh đỉnh sóng mang (cx+kx, cy+ky)
-    peak_cx = cx + kx
-    peak_cy = cy + ky
-    dist_from_peak = np.sqrt((X - peak_cx)**2 + (Y - peak_cy)**2)
-    lobe_search_r = max(abs(kx) * 0.6, 20.0)
-    lobe_mask = dist_from_peak <= lobe_search_r
-
-    amp_in_lobe = amp_no_dc * lobe_mask
-    max_val = amp_in_lobe.max()
-    if max_val == 0:
-        return max(min_rx, abs(kx) * 0.5), min_ry
-
-    # 4. Ngưỡng năng lượng để xác định vùng búp phổ
-    threshold = energy_thresh * max_val
-    lobe_region = amp_in_lobe >= threshold
-
-    if lobe_region.sum() == 0:
-        return max(min_rx, abs(kx) * 0.5), min_ry
-
-    # 5. Đo half-width và half-height của vùng lobe (so với đỉnh sóng mang)
-    lobe_xs = X[lobe_region] - peak_cx
-    lobe_ys = Y[lobe_region] - peak_cy
-
-    rx_est = float(np.max(np.abs(lobe_xs))) + margin
-    ry_est = float(np.max(np.abs(lobe_ys))) + margin
-
-    # 6. Hard-cap rx để cạnh hộp KHÔNG chồng lên DC (bậc 0 tại cx trong FFT gốc)
-    #    Cạnh trái hộp = peak_cx - rx = cx + kx - rx phải > cx → rx < kx - dc_gap_x
+    spec = np.log(1.0 + amp + 1e-6)
+    spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
+    
+    # 2. Tạo Forbidden Zone quanh DC để tránh loang lấn vào DC
+    y_coords = np.arange(H)
+    x_coords = np.arange(W)
+    X, Y = np.meshgrid(x_coords, y_coords)
+    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    
+    r0 = 60
+    center_mask = dist_from_dc <= r0
+    center_spec = spec_smooth.copy()
+    center_spec[~center_mask] = 0
+    
+    c_min = center_spec.min()
+    c_max = center_spec.max()
+    if c_max - c_min > 1e-8:
+        center_spec_gray = (center_spec - c_min) / (c_max - c_min)
+        center_spec_u8 = (center_spec_gray * 255).astype(np.uint8)
+        _, bw_dc = cv2.threshold(center_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bw_dc = bw_dc > 0
+    else:
+        bw_dc = dist_from_dc <= 20
+        
+    margin_dc = 10
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_dc + 1, 2 * margin_dc + 1))
+    forbidden_zone = cv2.dilate(bw_dc.astype(np.uint8), kernel) > 0
+    
+    # Vị trí hạt giống (seed)
+    seed_x = int(np.clip(cx + kx, 0, W - 1))
+    seed_y = int(np.clip(cy + ky, 0, H - 1))
+    peak_val = spec_smooth[seed_y, seed_x]
+    
+    # 3. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized)
+    # Mask cho floodFill cần kích thước (H+2, W+2)
+    ff_mask = np.zeros((H + 2, W + 2), dtype=np.uint8)
+    ff_mask[1:-1, 1:-1] = forbidden_zone.astype(np.uint8)
+    
+    # Cài đặt ngưỡng dừng loang (ví dụ: dừng khi biên độ giảm xuống 35% giá trị đỉnh)
+    alpha = 0.35
+    lo_diff = float(max(peak_val - (alpha * peak_val), 0.1))
+    up_diff = 999.0  # cho phép loang vào vùng sáng hơn thoải mái
+    
+    flood_img = spec_smooth.copy()
+    try:
+        cv2.floodFill(
+            image=flood_img,
+            mask=ff_mask,
+            seedPoint=(seed_x, seed_y),
+            newVal=0,
+            loDiff=lo_diff,
+            upDiff=up_diff,
+            flags=4 | cv2.FLOODFILL_FIXED_RANGE
+        )
+        mask = ff_mask[1:-1, 1:-1] > 0
+    except Exception:
+        # Fallback nếu floodFill lỗi
+        mask = np.sqrt((X - seed_x)**2 + (Y - seed_y)**2) <= min_rx
+        
+    # Loại bỏ vùng cấm ra khỏi kết quả loang
+    mask[forbidden_zone] = False
+    
+    # 4. Hậu xử lý Morphology: imclose và điền lỗ
+    mask_u8 = mask.astype(np.uint8) * 255
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, close_kernel)
+    
+    # Điền lỗ (fill holes)
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask_filled = np.zeros_like(mask_u8)
+    if len(contours) > 0:
+        cv2.drawContours(mask_filled, contours, -1, 255, -1)
+    else:
+        mask_filled = mask_u8
+        
+    # 5. Xác định bounding box rx, ry từ mask
+    y_idx, x_idx = np.where(mask_filled > 0)
+    if len(x_idx) > 0:
+        rx_est = float(np.max(np.abs(x_idx - seed_x))) + margin
+        ry_est = float(np.max(np.abs(y_idx - seed_y))) + margin
+    else:
+        rx_est, ry_est = min_rx, min_ry
+        
+    # 6. Ràng buộc an toàn tuyệt đối tránh đè lên DC
+    # Cạnh trái của bộ lọc (seed_x - rx) phải cách DC (cx) một khoảng an toàn (dc_gap_x = 12px)
     dc_gap_x = 12.0
     max_rx_safe = max(abs(kx) - dc_gap_x, min_rx)
     rx = min(max(rx_est, min_rx), max_rx_safe)
-
+    
+    # Ràng buộc ky tương tự
     if abs(ky) > 10.0:
         dc_gap_y = 12.0
         max_ry_safe = max(abs(ky) - dc_gap_y, min_ry)
         ry = min(max(ry_est, min_ry), max_ry_safe)
     else:
         ry = max(ry_est, min_ry)
-
+        
     return rx, ry
 
 
