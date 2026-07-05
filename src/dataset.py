@@ -263,9 +263,13 @@ class MultiAngleHologramDataset(Dataset):
             img1_path = group[idx1]
             img2_path = group[idx2]
             
-            I1_raw = cv2.imread(img1_path, cv2.IMREAD_UNCHANGED)
-            I2_raw = cv2.imread(img2_path, cv2.IMREAD_UNCHANGED)
-            
+            # Đọc ảnh an toàn với đường dẫn chứa ký tự Unicode trên Windows
+            try:
+                I1_raw = cv2.imdecode(np.fromfile(img1_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                I2_raw = cv2.imdecode(np.fromfile(img2_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            except Exception as e:
+                I1_raw, I2_raw = None, None
+
             if I1_raw is None or I2_raw is None:
                 raise FileNotFoundError(f"Không thể đọc ảnh từ: {img1_path} hoặc {img2_path}")
             
