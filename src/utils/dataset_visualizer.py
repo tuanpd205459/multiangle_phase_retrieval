@@ -3,6 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Rectangle
 import torch
+import sys
+
+# Import estimate_filter_size để tính kích thước bộ lọc đúng từ phổ thực tế
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+from src.dataset import estimate_filter_size
 
 
 def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
@@ -74,12 +81,9 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y1 = cy + k1[1]
         axes[i, 1].plot(peak_x1, peak_y1, 'rx', markersize=8, label='Carrier')
         
-        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp (Rx = 0.4 * R, Ry = 1.2 * R)
-        # Giới hạn Rx tương tự mô hình để không chạm vào vệt sáng DC (x = cx)
-        rx1 = filter_radius * 0.4
-        max_rx1 = abs(k1[0]) * 0.8
-        rx1 = min(rx1, max_rx1)
-        ry1 = filter_radius * 1.2
+        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp
+        # Dùng estimate_filter_size() để đo kích thước búp phổ +1 thực tế
+        rx1, ry1 = estimate_filter_size(I1, k1[0], k1[1])
         rect1 = Rectangle((peak_x1 - rx1, peak_y1 - ry1), width=2*rx1, height=2*ry1, color='red', fill=False, linestyle='--', linewidth=1.5)
         axes[i, 1].add_patch(rect1)
         
@@ -104,10 +108,7 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         axes[i, 3].plot(peak_x2, peak_y2, 'rx', markersize=8)
         
         # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp
-        rx2 = filter_radius * 0.4
-        max_rx2 = abs(k2[0]) * 0.8
-        rx2 = min(rx2, max_rx2)
-        ry2 = filter_radius * 1.2
+        rx2, ry2 = estimate_filter_size(I2, k2[0], k2[1])
         rect2 = Rectangle((peak_x2 - rx2, peak_y2 - ry2), width=2*rx2, height=2*ry2, color='red', fill=False, linestyle='--', linewidth=1.5)
         axes[i, 3].add_patch(rect2)
         
@@ -172,11 +173,8 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         # 3. Biến đổi sang miền tần số sau khi dịch chuyển
         I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
         
-        # 4. Áp dụng bộ lọc hình chữ nhật
-        rx = filter_radius * 0.4
-        max_rx = abs(k[0]) * 0.8
-        rx = min(rx, max_rx)
-        ry = filter_radius * 1.2
+        # 4. Áp dụng bộ lọc hình chữ nhật — dùng estimate_filter_size() để lấy đúng kích thước
+        rx, ry = estimate_filter_size(I, k[0], k[1])
         
         x_dist = mesh_x - W // 2
         y_dist = mesh_y - H // 2
