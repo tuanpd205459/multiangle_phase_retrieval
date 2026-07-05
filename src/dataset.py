@@ -9,42 +9,50 @@ from torch.utils.data import Dataset
 def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80, thresh_ratio=0.85):
     """
     Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel của hologram
-    bằng phương pháp Trọng tâm Năng lượng (Centroid/Center of Mass) của búp sóng +1.
-    Giúp chống nhiễu và xử lý chính xác khi phổ bị lan rộng (broadened).
+    bằng phương pháp làm mịn phổ (Gaussian smoothing) và tính Trọng tâm Năng lượng.
+    Giúp chống nhiễu và loại bỏ các vạch sáng DC đứng để định vị chính xác tâm búp phổ +1.
     """
+    import scipy.ndimage as ndimage
     H, W = I.shape
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     I_fft_amp = np.abs(I_fft)
     
-    # 1. Tạo lưới tọa độ pixel 2D
+    # 1. Làm mịn phổ biên độ bằng bộ lọc Gauss (sigma=5.0) để làm nhòa vệt sáng đứng của DC leakage
+    # và làm nổi bật vùng năng lượng rộng của búp phổ chữ nhật +1
+    I_fft_amp_smooth = ndimage.gaussian_filter(I_fft_amp, sigma=5.0)
+    
+    # 2. Tạo lưới tọa độ pixel 2D
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
     
-    # 2. Tính khoảng cách tới tâm DC
+    # 3. Tính khoảng cách tới tâm DC
     dist_from_dc = np.sqrt((X - W//2)**2 + (Y - H//2)**2)
     
-    # 3. Tạo mặt nạ vùng tìm kiếm (nửa trên, loại trừ búp trung tâm DC)
-    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max) & (Y < H//2)
-    masked_amp = I_fft_amp * search_mask
+    # 4. Tạo mặt nạ vùng tìm kiếm (nửa trên, block vùng trung tâm DC và dải dọc tâm)
+    # Loại bỏ dải dọc |X - W//2| < 12 để tránh bị nhiễu dọc.
+    # Cố định tìm ở nửa bên phải (X - W//2 >= 12) để đảm bảo tính nhất quán.
+    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max) & (Y < H//2) & (X - W//2 >= 12)
     
-    # 4. Tìm giá trị cực đại trong vùng tìm kiếm
-    max_val = np.max(masked_amp)
+    # Áp dụng mặt nạ lên phổ đã được làm mịn
+    masked_smooth = I_fft_amp_smooth * search_mask
+    
+    # 5. Tìm giá trị cực đại trong vùng phổ làm mịn
+    max_val = np.max(masked_smooth)
     if max_val == 0:
         return 0.0, 0.0
         
-    # 5. Lọc ngưỡng: chỉ giữ lại vùng lõi có năng lượng cao nhất (mặc định >= 85% max)
+    # 6. Tìm vùng ngưỡng năng lượng dựa trên phổ làm mịn
     threshold = thresh_ratio * max_val
-    high_energy_mask = (masked_amp >= threshold) & search_mask
+    high_energy_mask = (masked_smooth >= threshold) & search_mask
     
-    # 6. Tính trọng tâm (Center of Mass) của đám mây phổ
-    weights = masked_amp[high_energy_mask]
+    # 7. Tính trọng tâm (Center of Mass) dựa trên phổ gốc để giữ độ chính xác cao
+    weights = I_fft_amp[high_energy_mask]
     total_weight = np.sum(weights)
     
     if total_weight == 0:
-        # Dự phòng nếu lỗi
-        max_idx = np.argmax(masked_amp)
-        peak_y, peak_x = np.unravel_index(max_idx, masked_amp.shape)
+        max_idx = np.argmax(masked_smooth)
+        peak_y, peak_x = np.unravel_index(max_idx, masked_smooth.shape)
         ky = float(peak_y - H//2)
         kx = float(peak_x - W//2)
     else:

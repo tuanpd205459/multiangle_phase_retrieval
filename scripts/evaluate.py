@@ -232,7 +232,7 @@ def visualize_sample(sample_idx, I1, I2, I_pred1, amp, phase, phase_gt, output_d
     
     # 7. Phổ Fourier của Hologram 1
     I1_fft = np.log(np.abs(np.fft.fftshift(np.fft.fft2(I1))) + 1e-3)
-    axes[1, 1].imshow(I1_fft, cmap='viridis')
+    axes[1, 1].imshow(I1_fft, cmap='viridis', vmin=0, vmax=12)
     axes[1, 1].set_title("Hologram Fourier Spectrum")
     axes[1, 1].axis('off')
     

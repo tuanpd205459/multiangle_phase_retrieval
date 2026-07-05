@@ -1,8 +1,9 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Ellipse, Rectangle
 import torch
+
 
 def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
     """
@@ -60,7 +61,7 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         print(f"   - Mẫu {i}: k1=[{k1[0]:.2f}, {k1[1]:.2f}] | k2=[{k2[0]:.2f}, {k2[1]:.2f}]")
 
         # --- Cột 2: Phổ Fourier 1 ---
-        im_fft1 = axes[i, 1].imshow(I1_fft_log, cmap='viridis')
+        im_fft1 = axes[i, 1].imshow(I1_fft_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 1].axis('off')
         if i == 0:
             axes[i, 1].set_title(f"Fourier 1 (Log)\nk1=({k1[0]:.2f}, {k1[1]:.2f})", fontsize=12, pad=10)
@@ -73,14 +74,14 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y1 = cy + k1[1]
         axes[i, 1].plot(peak_x1, peak_y1, 'rx', markersize=8, label='Carrier')
         
-        # Vẽ mặt nạ elip bộ lọc thông thấp (Rx = 0.4 * R, Ry = 1.2 * R)
+        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp (Rx = 0.4 * R, Ry = 1.2 * R)
         # Giới hạn Rx tương tự mô hình để không chạm vào vệt sáng DC (x = cx)
         rx1 = filter_radius * 0.4
         max_rx1 = abs(k1[0]) * 0.8
         rx1 = min(rx1, max_rx1)
         ry1 = filter_radius * 1.2
-        ellipse1 = Ellipse((peak_x1, peak_y1), width=2*rx1, height=2*ry1, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 1].add_patch(ellipse1)
+        rect1 = Rectangle((peak_x1 - rx1, peak_y1 - ry1), width=2*rx1, height=2*ry1, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 1].add_patch(rect1)
         
         # --- Cột 3: Hologram 2 ---
         axes[i, 2].imshow(I2, cmap='gray')
@@ -89,7 +90,7 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
             axes[i, 2].set_title("Hologram 2 (Angle 2)", fontsize=12, pad=10)
             
         # --- Cột 4: Phổ Fourier 2 ---
-        im_fft2 = axes[i, 3].imshow(I2_fft_log, cmap='viridis')
+        im_fft2 = axes[i, 3].imshow(I2_fft_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 3].axis('off')
         if i == 0:
             axes[i, 3].set_title(f"Fourier 2 (Log)\nk2=({k2[0]:.2f}, {k2[1]:.2f})", fontsize=12, pad=10)
@@ -102,13 +103,13 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y2 = cy + k2[1]
         axes[i, 3].plot(peak_x2, peak_y2, 'rx', markersize=8)
         
-        # Vẽ mặt nạ elip bộ lọc thông thấp
+        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp
         rx2 = filter_radius * 0.4
         max_rx2 = abs(k2[0]) * 0.8
         rx2 = min(rx2, max_rx2)
         ry2 = filter_radius * 1.2
-        ellipse2 = Ellipse((peak_x2, peak_y2), width=2*rx2, height=2*ry2, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 3].add_patch(ellipse2)
+        rect2 = Rectangle((peak_x2 - rx2, peak_y2 - ry2), width=2*rx2, height=2*ry2, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 3].add_patch(rect2)
         
         # --- Cột 5: Ground Truth Phase (nếu có) ---
         if cols == 5:
@@ -171,7 +172,7 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         # 3. Biến đổi sang miền tần số sau khi dịch chuyển
         I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
         
-        # 4. Áp dụng bộ lọc hình elip
+        # 4. Áp dụng bộ lọc hình chữ nhật
         rx = filter_radius * 0.4
         max_rx = abs(k[0]) * 0.8
         rx = min(rx, max_rx)
@@ -179,8 +180,11 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         
         x_dist = mesh_x - W // 2
         y_dist = mesh_y - H // 2
-        distance_ellipse = np.sqrt((x_dist / rx)**2 + (y_dist / ry)**2 + 1e-10)
-        mask = 1.0 / (1.0 + np.exp(-(1.0 - distance_ellipse) / 0.1))
+        
+        # Soft rectangular mask along x and y dimensions (using sigmoids)
+        mask_x = 1.0 / (1.0 + np.exp(-(rx - np.abs(x_dist)) / 0.1))
+        mask_y = 1.0 / (1.0 + np.exp(-(ry - np.abs(y_dist)) / 0.1))
+        mask = mask_x * mask_y
         
         I_fft_filtered = I_fft_shifted * mask
         I_fft_filtered_log = np.log(np.abs(I_fft_filtered) + 1e-6)
@@ -195,20 +199,20 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         axes[i, 0].axis('off')
         axes[i, 0].set_title(f"Input Hologram ({suffix})", fontsize=11)
         
-        # --- Cột 2: Phổ Fourier gốc (kèm elip đỏ) ---
-        axes[i, 1].imshow(I_fft_raw_log, cmap='viridis')
+        # --- Cột 2: Phổ Fourier gốc (kèm HCN đỏ) ---
+        axes[i, 1].imshow(I_fft_raw_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 1].axis('off')
         axes[i, 1].plot(cx, cy, 'g+', markersize=8) # DC center
         peak_x = cx + k[0]
         peak_y = cy + k[1]
         axes[i, 1].plot(peak_x, peak_y, 'rx', markersize=8) # Carrier center
         
-        ellipse = Ellipse((peak_x, peak_y), width=2*rx, height=2*ry, angle=0, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 1].add_patch(ellipse)
-        axes[i, 1].set_title(f"Fourier + Ellipse filter\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
+        rect = Rectangle((peak_x - rx, peak_y - ry), width=2*rx, height=2*ry, color='red', fill=False, linestyle='--', linewidth=1.5)
+        axes[i, 1].add_patch(rect)
+        axes[i, 1].set_title(f"Fourier + Rect filter\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
         
         # --- Cột 3: Phổ sau khi lọc và dịch về tâm DC ---
-        axes[i, 2].imshow(I_fft_filtered_log, cmap='viridis')
+        axes[i, 2].imshow(I_fft_filtered_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 2].axis('off')
         axes[i, 2].set_title("Filtered & Shifted Fourier", fontsize=10)
         
