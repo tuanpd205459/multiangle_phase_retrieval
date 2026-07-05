@@ -54,26 +54,31 @@ class DifferentiableDemodulator(nn.Module):
         # 3. Biến đổi sang miền tần số Fourier
         I_fft = fft.fftshift(fft.fft2(I_complex_shifted), dim=(-2, -1))
 
-        # 4. Áp dụng bộ lọc thông thấp hình tròn tại tâm tần số (H//2, W//2)
+        # 4. Áp dụng bộ lọc thông thấp hình chữ nhật tại tâm tần số (H//2, W//2)
         y_dist = mesh_y - H // 2
         x_dist = mesh_x - W // 2
         
-        # Tạo mặt nạ lọc hình elip mềm khả vi (Soft Sigmoid Elliptical Filter Mask)
-        # Kẹp giá trị bán kính tối thiểu là 5.0 để tránh bán kính elip âm/quá nhỏ
+        # Tạo mặt nạ lọc hình chữ nhật mềm khả vi (Soft Sigmoid Rectangular Filter Mask)
+        # Kẹp giá trị bán kính (nửa chiều ngang/dọc) tối thiểu là 5.0 để tránh giá trị âm/quá nhỏ
         rx = torch.clamp(self.filter_radius_x, min=5.0)
         ry = torch.clamp(self.filter_radius_y, min=5.0)
         
         # Đảm bảo Rx không vượt quá 80% khoảng cách ngang từ sóng mang đến tâm DC
-        # Điều này ngăn chặn tuyệt đối bộ lọc elip chạm vào vạch sáng đứng của phổ bậc 0 (DC) tại x = cx.
+        # Điều này ngăn chặn tuyệt đối bộ lọc chạm vào vạch sáng đứng của phổ bậc 0 (DC) tại x = cx.
         max_rx = torch.abs(kx).min() * 0.8
         rx = torch.minimum(rx, max_rx)
         
-        # Khoảng cách Elip chuẩn hóa (thêm epsilon 1e-10 để tránh lỗi gradient bằng NaN tại tâm khi x_dist=y_dist=0)
-        distance_ellipse = torch.sqrt((x_dist / rx)**2 + (y_dist / ry)**2 + 1e-10)
+        # Khoảng cách x_dist và y_dist dạng absolute
+        x_abs = torch.abs(x_dist)
+        y_abs = torch.abs(y_dist)
         
-        # Sử dụng Sigmoid để tạo độ mượt cho biên bộ lọc elip, temperature = 0.1
+        # Tạo mặt nạ mềm 1D theo trục X và Y sử dụng Sigmoid
         temperature = 0.1
-        mask = torch.sigmoid((1.0 - distance_ellipse) / temperature).view(1, 1, H, W).to(device)
+        mask_x = torch.sigmoid((rx - x_abs) / temperature)
+        mask_y = torch.sigmoid((ry - y_abs) / temperature)
+        
+        # Mặt nạ hình chữ nhật 2D là tích của hai mặt nạ 1D
+        mask = (mask_x * mask_y).view(1, 1, H, W).to(device)
         I_fft_filtered = I_fft * mask
 
         # 5. Biến đổi Fourier ngược để thu được trường sóng phức đã giải điều chế
