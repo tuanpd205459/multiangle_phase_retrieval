@@ -11,19 +11,27 @@ class DifferentiableDemodulator(nn.Module):
     phép dịch phổ Fourier được thực hiện thông qua nhân pha tuyến tính ở miền không gian:
         I_shifted(x,y) = I(x,y) * exp(-i * 2*pi * (kx*x/W + ky*y/H))
     
-    Sau đó, đưa sang miền Fourier để áp dụng bộ lọc thông thấp (low-pass filter) hình tròn
+    Sau đó, đưa sang miền Fourier để áp dụng bộ lọc thông thấp (low-pass filter) hình chữ nhật mềm
     để lọc lấy trường sóng phức vật thể U_demod.
+
+    Kích thước bộ lọc (rx, ry) có thể:
+      - Dùng giá trị mặc định toàn cục (chế độ synthetic / huấn luyện)
+      - Nhận per-sample từ estimate_filter_size() khi xử lý ảnh thực (chế độ inference)
     """
     def __init__(self, filter_radius_x=20.0, filter_radius_y=60.0):
         super(DifferentiableDemodulator, self).__init__()
-        # Đăng ký bán kính elip ngang và dọc dạng nn.Parameter
+        # Bán kính bộ lọc mặc định toàn cục (dùng khi không truyền rx/ry per-sample)
         self.filter_radius_x = nn.Parameter(torch.tensor(float(filter_radius_x), dtype=torch.float32))
         self.filter_radius_y = nn.Parameter(torch.tensor(float(filter_radius_y), dtype=torch.float32))
 
-    def forward(self, I, kx, ky):
+    def forward(self, I, kx, ky, rx_override=None, ry_override=None):
         """
-        I: Tensor hologram cường độ [B, 1, H, W]
-        kx, ky: Tần số sóng mang tương ứng [B] (ở đơn vị pixel dịch chuyển so với tâm)
+        I:           Tensor hologram cường độ [B, 1, H, W]
+        kx, ky:      Tần số sóng mang [B] (pixel lệch so với tâm DC)
+        rx_override: [B] hoặc scalar — bán kính bộ lọc trục X per-sample (từ estimate_filter_size).
+                     Nếu None → dùng self.filter_radius_x (learnable global).
+        ry_override: [B] hoặc scalar — bán kính bộ lọc trục Y per-sample.
+                     Nếu None → dùng self.filter_radius_y (learnable global).
         """
         B, C, H, W = I.shape
         device = I.device
@@ -31,57 +39,55 @@ class DifferentiableDemodulator(nn.Module):
         # 1. Tạo lưới tọa độ không gian (x, y)
         y_grid = torch.arange(H, dtype=torch.float32, device=device)
         x_grid = torch.arange(W, dtype=torch.float32, device=device)
-        mesh_y, mesh_x = torch.meshgrid(y_grid, x_grid, indexing='ij') # [H, W]
+        mesh_y, mesh_x = torch.meshgrid(y_grid, x_grid, indexing='ij')  # [H, W]
 
-        # Mở rộng kích thước lưới và sóng mang để thực hiện phép toán song song theo Batch
-        mesh_x_expanded = mesh_x.view(1, 1, H, W)
-        mesh_y_expanded = mesh_y.view(1, 1, H, W)
-        kx_expanded = kx.view(B, 1, 1, 1)
-        ky_expanded = ky.view(B, 1, 1, 1)
+        mesh_x_exp = mesh_x.view(1, 1, H, W)
+        mesh_y_exp = mesh_y.view(1, 1, H, W)
+        kx_exp = kx.view(B, 1, 1, 1)
+        ky_exp = ky.view(B, 1, 1, 1)
 
-        # 2. Thực hiện dịch phổ khả vi ở miền không gian (Fourier Shift Theorem)
-        # Nhân ảnh hologram cường độ thực với số mũ phức của sóng mang ngược hướng
-        phase_shift = -2.0 * np.pi * (kx_expanded * mesh_x_expanded / W + ky_expanded * mesh_y_expanded / H)
-        
-        # Tạo số phức exp(i * phase_shift)
-        cos_shift = torch.cos(phase_shift)
-        sin_shift = torch.sin(phase_shift)
-        exp_shift = torch.complex(cos_shift, sin_shift)
-        
-        # Dịch chuyển trường sóng sang miền phức
+        # 2. Dịch phổ về tâm (Fourier Shift Theorem)
+        phase_shift = -2.0 * np.pi * (kx_exp * mesh_x_exp / W + ky_exp * mesh_y_exp / H)
+        exp_shift = torch.complex(torch.cos(phase_shift), torch.sin(phase_shift))
         I_complex_shifted = I.to(torch.complex64) * exp_shift
 
-        # 3. Biến đổi sang miền tần số Fourier
+        # 3. FFT → bậc +1 giờ nằm tại tâm (H//2, W//2)
         I_fft = fft.fftshift(fft.fft2(I_complex_shifted), dim=(-2, -1))
 
-        # 4. Áp dụng bộ lọc thông thấp hình chữ nhật tại tâm tần số (H//2, W//2)
-        y_dist = mesh_y - H // 2
+        # 4. Xác định bán kính bộ lọc rx, ry
+        #    Ưu tiên: rx_override (từ estimate_filter_size) > learnable global
+        if rx_override is not None:
+            # Per-sample rx: [B] → [B, 1, 1, 1]
+            rx = torch.as_tensor(rx_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
+            rx = torch.clamp(rx, min=5.0)
+        else:
+            # Global learnable (chế độ synthetic / fine-tune)
+            rx = torch.clamp(self.filter_radius_x, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
+
+        if ry_override is not None:
+            ry = torch.as_tensor(ry_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
+            ry = torch.clamp(ry, min=5.0)
+        else:
+            ry = torch.clamp(self.filter_radius_y, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
+
+        # KHÔNG ràng buộc max_rx = kx * 0.8 nữa!
+        # Kích thước bộ lọc được đo từ búp phổ thực tế bởi estimate_filter_size()
+        # → bộ lọc tự bao phủ toàn bộ búp phổ +1 bất kể kx nhỏ hay lớn.
+
+        # 5. Áp dụng mặt nạ HCN mềm (Soft Sigmoid Rectangular Mask) tại tâm phổ
+        y_dist = mesh_y - H // 2  # [H, W]
         x_dist = mesh_x - W // 2
-        
-        # Tạo mặt nạ lọc hình chữ nhật mềm khả vi (Soft Sigmoid Rectangular Filter Mask)
-        # Kẹp giá trị bán kính (nửa chiều ngang/dọc) tối thiểu là 5.0 để tránh giá trị âm/quá nhỏ
-        rx = torch.clamp(self.filter_radius_x, min=5.0)
-        ry = torch.clamp(self.filter_radius_y, min=5.0)
-        
-        # Đảm bảo Rx không vượt quá 80% khoảng cách ngang từ sóng mang đến tâm DC
-        # Điều này ngăn chặn tuyệt đối bộ lọc chạm vào vạch sáng đứng của phổ bậc 0 (DC) tại x = cx.
-        max_rx = torch.abs(kx).min() * 0.8
-        rx = torch.minimum(rx, max_rx)
-        
-        # Khoảng cách x_dist và y_dist dạng absolute
-        x_abs = torch.abs(x_dist)
-        y_abs = torch.abs(y_dist)
-        
-        # Tạo mặt nạ mềm 1D theo trục X và Y sử dụng Sigmoid
-        temperature = 0.1
-        mask_x = torch.sigmoid((rx - x_abs) / temperature)
+        x_abs = torch.abs(x_dist).view(1, 1, H, W)  # [1,1,H,W]
+        y_abs = torch.abs(y_dist).view(1, 1, H, W)
+
+        temperature = 0.5  # mềm hơn một chút để gradient mượt
+        mask_x = torch.sigmoid((rx - x_abs) / temperature)   # [B,1,H,W]
         mask_y = torch.sigmoid((ry - y_abs) / temperature)
-        
-        # Mặt nạ hình chữ nhật 2D là tích của hai mặt nạ 1D
-        mask = (mask_x * mask_y).view(1, 1, H, W).to(device)
+        mask = mask_x * mask_y                                # [B,1,H,W]
+
         I_fft_filtered = I_fft * mask
 
-        # 5. Biến đổi Fourier ngược để thu được trường sóng phức đã giải điều chế
+        # 6. IFFT → trường sóng phức đã giải điều chế
         U_demod = fft.ifft2(fft.ifftshift(I_fft_filtered, dim=(-2, -1)))
 
         return U_demod
@@ -96,20 +102,29 @@ if __name__ == "__main__":
     I = torch.rand(2, 1, 256, 256)
     
     # Thiết lập sóng mang có thể tối ưu hóa (đòi hỏi tính gradient)
-    kx = torch.tensor([40.0, -45.0], requires_grad=True)
-    ky = torch.tensor([-30.0, -35.0], requires_grad=True)
+    kx = torch.tensor([40.0, 15.0], requires_grad=True)  # sample 2 có kx nhỏ
+    ky = torch.tensor([-30.0, -1.5], requires_grad=True)
     
     demod = DifferentiableDemodulator(filter_radius_x=20.0, filter_radius_y=60.0)
+
+    print("\n--- Chế độ 1: Global learnable (synthetic/training) ---")
     U_demod = demod(I, kx, ky)
-    
-    # Tính một hàm mục tiêu đơn giản để thử nghiệm lan truyền ngược (Backward)
     loss = torch.mean(torch.abs(U_demod))
     loss.backward()
-    
-    print("✅ Kiểm tra thành công!")
-    print(f"Demodulated wave shape: {U_demod.shape}")
-    print(f"Demodulated wave dtype: {U_demod.dtype}")
+    print(f"✅ Shape: {U_demod.shape}, dtype: {U_demod.dtype}")
     print(f"Gradient of kx: {kx.grad.numpy()}")
-    print(f"Gradient of ky: {ky.grad.numpy()}")
     print(f"Gradient of filter_radius_x: {demod.filter_radius_x.grad.item():.6f}")
+
+    print("\n--- Chế độ 2: Per-sample rx_override (ảnh thực / inference) ---")
+    # Ví dụ: estimate_filter_size() trả về rx=[35, 55], ry=[40, 60] per-sample
+    rx_from_estimate = torch.tensor([35.0, 55.0])  # sample 2 có rx lớn dù kx nhỏ!
+    ry_from_estimate = torch.tensor([40.0, 60.0])
+    kx2 = torch.tensor([40.0, 15.0], requires_grad=True)
+    ky2 = torch.tensor([-30.0, -1.5], requires_grad=True)
+    U_demod2 = demod(I, kx2, ky2, rx_override=rx_from_estimate, ry_override=ry_from_estimate)
+    loss2 = torch.mean(torch.abs(U_demod2))
+    loss2.backward()
+    print(f"✅ Shape: {U_demod2.shape}")
+    print(f"Gradient of kx (per-sample rx): {kx2.grad.numpy()}")
+    print("✅ rx_override hoạt động đúng — filter lớn dù kx=15!")
     print(f"Gradient of filter_radius_y: {demod.filter_radius_y.grad.item():.6f}")

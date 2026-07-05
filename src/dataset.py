@@ -6,7 +6,7 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80, thresh_ratio=0.85):
+def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, thresh_ratio=0.85):
     """
     Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel của hologram
     bằng phương pháp làm mịn phổ (Gaussian smoothing) và tính Trọng tâm Năng lượng.
@@ -62,6 +62,65 @@ def estimate_carrier_frequency(I, search_radius_min=15, search_radius_max=80, th
         kx = float(centroid_x - W//2)
         
     return kx, ky
+
+def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0, margin=5.0):
+    """
+    Ước lượng kích thước bộ lọc HCN cần thiết để bao phủ toàn bộ búp phổ +1.
+
+    Ý tưởng:
+      1. Dịch phổ Fourier để đưa bậc +1 về tâm (DC) bằng nhân pha exp(-i*2pi*(kx*x/W + ky*y/H)).
+      2. Trong phổ đã dịch, đo vùng có năng lượng > energy_thresh * max_energy.
+      3. Lấy nửa chiều rộng (half-width) và nửa chiều cao (half-height) của vùng đó + margin.
+
+    Trả về:
+      rx (float): Bán kính bộ lọc theo trục X (half-width)
+      ry (float): Bán kính bộ lọc theo trục Y (half-height)
+    """
+    H, W = I.shape
+    y = np.arange(H)
+    x = np.arange(W)
+    X, Y = np.meshgrid(x, y)
+
+    # 1. Dịch phổ về tâm: nhân hologram với exp(-i*2pi*(kx*x/W + ky*y/H))
+    phase = -2.0 * np.pi * (kx * X / W + ky * Y / H)
+    I_shifted_spatial = I * np.exp(1j * phase)
+
+    # 2. FFT và fftshift → bậc +1 nằm tại tâm (H//2, W//2)
+    I_fft = np.fft.fftshift(np.fft.fft2(I_shifted_spatial))
+    amp = np.abs(I_fft)
+
+    # 3. Xác định vùng tìm lobe +1: hình tròn nhỏ quanh tâm, tránh DC leakage
+    #    Sau khi shift, bậc +1 ở tâm; DC residual cũng ở tâm → lấy vùng trong r < kx*0.9
+    cx, cy = W // 2, H // 2
+    dist_center = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    lobe_search_r = min(abs(kx), abs(ky) if abs(ky) > 5 else abs(kx)) * 0.9 if abs(ky) > 5 else abs(kx) * 0.9
+    lobe_search_r = max(lobe_search_r, 20.0)  # tối thiểu 20 pixel
+    lobe_mask = dist_center <= lobe_search_r
+
+    amp_in_lobe = amp * lobe_mask
+    max_val = amp_in_lobe.max()
+    if max_val == 0:
+        return max(min_rx, abs(kx) * 0.5), min_ry
+
+    # 4. Ngưỡng năng lượng để xác định vùng búp phổ
+    threshold = energy_thresh * max_val
+    lobe_region = (amp_in_lobe >= threshold)
+
+    if lobe_region.sum() == 0:
+        return max(min_rx, abs(kx) * 0.5), min_ry
+
+    # 5. Đo half-width và half-height của vùng lobe
+    lobe_xs = X[lobe_region] - cx
+    lobe_ys = Y[lobe_region] - cy
+
+    rx_est = float(np.max(np.abs(lobe_xs))) + margin
+    ry_est = float(np.max(np.abs(lobe_ys))) + margin
+
+    rx = max(rx_est, min_rx)
+    ry = max(ry_est, min_ry)
+
+    return rx, ry
+
 
 def generate_synthetic_phase_cell(H, W, rng):
     """
@@ -303,18 +362,26 @@ class MultiAngleHologramDataset(Dataset):
             
             kx1, ky1 = estimate_carrier_frequency(I1)
             kx2, ky2 = estimate_carrier_frequency(I2)
-            
+
+            # Ước lượng kích thước bộ lọc HCN dựa trên kích thước búp phổ +1 thực tế
+            rx1, ry1 = estimate_filter_size(I1, kx1, ky1)
+            rx2, ry2 = estimate_filter_size(I2, kx2, ky2)
+
             I1_tensor = torch.from_numpy(I1).unsqueeze(0)
             I2_tensor = torch.from_numpy(I2).unsqueeze(0)
             
             k1_tensor = torch.tensor([kx1, ky1], dtype=torch.float32)
             k2_tensor = torch.tensor([kx2, ky2], dtype=torch.float32)
+            filter1_tensor = torch.tensor([rx1, ry1], dtype=torch.float32)
+            filter2_tensor = torch.tensor([rx2, ry2], dtype=torch.float32)
             
             return {
                 'I1': I1_tensor,
                 'I2': I2_tensor,
                 'k1': k1_tensor,
                 'k2': k2_tensor,
+                'filter1': filter1_tensor,  # [rx1, ry1] ước lượng từ phổ thực
+                'filter2': filter2_tensor,  # [rx2, ry2] ước lượng từ phổ thực
                 'phi_gt': torch.zeros_like(I1_tensor)
             }
 
