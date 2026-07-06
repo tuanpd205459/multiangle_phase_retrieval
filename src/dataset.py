@@ -25,6 +25,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
     amp = np.abs(I_fft)
     spec = np.log1p(amp)
     spec = (spec - spec.min()) / (spec.max() - spec.min() + 1e-8)
+    spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
     
     # Loại bỏ vùng DC
     y_coords = np.arange(H)
