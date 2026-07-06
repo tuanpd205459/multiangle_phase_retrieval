@@ -134,9 +134,13 @@ def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0
     seed_x = int(np.clip(cx + kx, 0, W - 1))
     seed_y = int(np.clip(cy + ky, 0, H - 1))
     
-    # 3. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized) trên phổ tuyến tính biên độ
-    # Biên độ tuyến tính giảm rất nhanh về 0 ở nền nhiễu nên không loang rò rỉ ra ngoài búp phổ
-    peak_amp = amp_smooth[seed_y, seed_x]
+    # 3. LOẠI BỎ VÙNG DC VÀ NỬA BÊN TRÁI: Gán năng lượng vùng DC và toàn bộ nửa bên trái về 0
+    amp_smooth_no_dc = amp_smooth.copy()
+    amp_smooth_no_dc[forbidden_zone] = 0.0
+    amp_smooth_no_dc[X < cx + 12] = 0.0  # Chỉ giữ lại nửa bên phải (bậc +1)
+    
+    # 4. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized) trên phổ đã sạch DC và nửa trái
+    peak_amp = amp_smooth_no_dc[seed_y, seed_x]
     
     # Mask cho floodFill cần kích thước (H+2, W+2)
     ff_mask = np.zeros((H + 2, W + 2), dtype=np.uint8)
@@ -147,7 +151,7 @@ def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0
     lo_diff = float((1.0 - alpha) * peak_amp)
     up_diff = float(999.0 * peak_amp)  # cho phép loang vào vùng có biên độ cao hơn thoải mái
     
-    flood_img = amp_smooth.copy()
+    flood_img = amp_smooth_no_dc
     try:
         cv2.floodFill(
             image=flood_img,
@@ -445,9 +449,37 @@ class MultiAngleHologramDataset(Dataset):
             kx1, ky1 = estimate_carrier_frequency(I1)
             kx2, ky2 = estimate_carrier_frequency(I2)
 
-            # Ước lượng kích thước bộ lọc HCN dựa trên kích thước búp phổ +1 thực tế
-            rx1, ry1 = estimate_filter_size(I1, kx1, ky1)
-            rx2, ry2 = estimate_filter_size(I2, kx2, ky2)
+            # 1. Ước lượng kích thước bộ lọc độc lập cho từng góc
+            rx1_est, ry1_est = estimate_filter_size(I1, kx1, ky1)
+            rx2_est, ry2_est = estimate_filter_size(I2, kx2, ky2)
+
+            # 2. Đồng bộ kích thước bộ lọc chung (lấy max của cả hai góc)
+            # Vì cùng mẫu vật và hệ thống quang học thì búp phổ phải có kích thước vật lý như nhau
+            rx_shared = max(rx1_est, rx2_est)
+            ry_shared = max(ry1_est, ry2_est)
+
+            # 3. Áp dụng giới hạn an toàn tránh DC riêng biệt cho từng góc dựa trên kx, ky của nó
+            dc_gap_x = 12.0
+            min_rx = 15.0
+            min_ry = 15.0
+            
+            # An toàn cho góc 1
+            max_rx1_safe = max(abs(kx1) - dc_gap_x, min_rx)
+            rx1 = min(rx_shared, max_rx1_safe)
+            if abs(ky1) > 10.0:
+                max_ry1_safe = max(abs(ky1) - dc_gap_x, min_ry)
+                ry1 = min(ry_shared, max_ry1_safe)
+            else:
+                ry1 = ry_shared
+
+            # An toàn cho góc 2
+            max_rx2_safe = max(abs(kx2) - dc_gap_x, min_rx)
+            rx2 = min(rx_shared, max_rx2_safe)
+            if abs(ky2) > 10.0:
+                max_ry2_safe = max(abs(ky2) - dc_gap_x, min_ry)
+                ry2 = min(ry_shared, max_ry2_safe)
+            else:
+                ry2 = ry_shared
 
             I1_tensor = torch.from_numpy(I1).unsqueeze(0)
             I2_tensor = torch.from_numpy(I2).unsqueeze(0)
