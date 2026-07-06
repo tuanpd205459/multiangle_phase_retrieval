@@ -271,11 +271,13 @@ def generate_hologram_pair_realistic(phi, H, W, rng, noise_level=0.03, objective
     A_beam = np.exp(-((X - W/2)**2 + (Y - H/2)**2) / (2 * sigma_beam**2))
     
     # 4. Sóng mang sub-pixel ngẫu nhiên (Sub-pixel Carrier Frequencies)
-    kx1 = rng.uniform(35.2, 49.8) # Số thập phân gây rò rỉ phổ thực tế
-    ky1 = rng.uniform(-44.8, -30.2)
-    
+    # kx1 dương (phải), kx2 âm (trái)
+    kx1 = rng.uniform(35.2, 49.8) 
     kx2 = rng.uniform(-49.8, -35.2)
-    ky2 = rng.uniform(-44.8, -30.2)
+    
+    # ky1 và ky2 có thể âm hoặc dương tự do, trải đều góc phần tư I và IV (hoặc II và III)
+    ky1 = rng.uniform(-45.0, 45.0)
+    ky2 = rng.uniform(-45.0, 45.0)
     
     # 5. Sinh sóng tham chiếu phức có biên độ Gaussian
     phase_carrier1 = 2 * np.pi * (kx1 * X / W + ky1 * Y / H)
