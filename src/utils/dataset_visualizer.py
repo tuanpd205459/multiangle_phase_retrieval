@@ -173,6 +173,7 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         I_fft_raw_log = np.log(np.abs(I_fft_raw) + 1e-6)
         
         # 2. Chạy thuật toán tìm 3 đối tượng và lấy thông tin vùng bậc +1
+        spec_smooth = ndimage.gaussian_filter(I_fft_raw_log, sigma=2.0)
         norm_spec = (spec_smooth - spec_smooth.min()) / (spec_smooth.max() - spec_smooth.min() + 1e-8)
         norm_spec_u8 = (norm_spec * 255).astype(np.uint8)
         gtl, _ = cv2.threshold(norm_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -218,7 +219,18 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         if best_bw is None:
             best_bw = bw_open
             
-        contours_final, _ = cv2.findContours(best_bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Lưới tọa độ và loại bỏ vùng bậc 0 (DC) bằng mặt nạ hình tròn trước khi định vị búp phổ
+        y_coords = np.arange(H)
+        x_coords = np.arange(W)
+        X, Y = np.meshgrid(x_coords, y_coords)
+        dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+        rdc = int(round(min(H, W) * 0.06))
+        dc_mask = dist_from_dc < rdc
+        
+        best_bw_no_dc = best_bw.copy()
+        best_bw_no_dc[dc_mask] = 0
+        
+        contours_final, _ = cv2.findContours(best_bw_no_dc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         target_x = cx + k[0]
         target_y = cy + k[1]
         best_dist = float('inf')

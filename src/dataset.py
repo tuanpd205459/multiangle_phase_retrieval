@@ -94,8 +94,12 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=120, m
     if best_bw is None:
         best_bw = bw_open
         
-    # Tính toán thông số từng vùng
-    contours_final, _ = cv2.findContours(best_bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Loại bỏ vùng bậc 0 (DC) bằng mặt nạ hình tròn trước khi chọn búp +1
+    best_bw_no_dc = best_bw.copy()
+    best_bw_no_dc[dc_mask] = 0
+    
+    # Tính toán thông số từng vùng (sau khi đã loại bỏ DC)
+    contours_final, _ = cv2.findContours(best_bw_no_dc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     props = []
     
     for cnt in contours_final:
@@ -106,7 +110,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=120, m
                 c_x = M["m10"] / M["m00"]
                 c_y = M["m01"] / M["m00"]
                 
-                single_mask = np.zeros_like(best_bw)
+                single_mask = np.zeros_like(best_bw_no_dc)
                 cv2.drawContours(single_mask, [cnt], -1, 255, -1)
                 energy = float(np.sum(amp[single_mask > 0]))
                 
@@ -216,11 +220,23 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
         if T >= 1.0:
             break
             
+    # Lưới tọa độ và mặt nạ DC
+    y_coords = np.arange(H)
+    x_coords = np.arange(W)
+    X, Y = np.meshgrid(x_coords, y_coords)
+    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    rdc = int(round(min(H, W) * 0.06))
+    dc_mask = dist_from_dc < rdc
+
     if best_bw is None:
         best_bw = bw_open
         
-    # Tính Bounding Box dựa trên Convex Hull của vùng gần kx, ky nhất
-    contours_final, _ = cv2.findContours(best_bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Loại bỏ vùng bậc 0 (DC) bằng mặt nạ hình tròn trước khi định vị búp phổ
+    best_bw_no_dc = best_bw.copy()
+    best_bw_no_dc[dc_mask] = 0
+    
+    # Tính Bounding Box dựa trên Convex Hull của vùng gần kx, ky nhất (sau khi xóa DC)
+    contours_final, _ = cv2.findContours(best_bw_no_dc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     target_x = cx + kx
     target_y = cy + ky
     
