@@ -156,7 +156,8 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
     H, W = I1.shape
     cx, cy = W // 2, H // 2
     
-    fig, axes = plt.subplots(2, 5, figsize=(18, 7.5))
+    # Cấu hình lại hình vẽ còn 4 cột (bỏ cột Selected Lobe Mask)
+    fig, axes = plt.subplots(2, 4, figsize=(15, 7.5))
     
     angles_data = [
         {'I': I1, 'k': k1, 'title_suffix': 'Angle 1'},
@@ -175,43 +176,25 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         # 2. Gọi trực tiếp hàm estimate_filter_size đã được đồng bộ chuẩn xác ở dataset.py
         rx, ry, mask_centered, binary_mask = estimate_filter_size(I, k[0], k[1])
         
-        # Bounding Box thực tế từ binary_mask
         target_x = cx + k[0]
         target_y = cy + k[1]
-        contours, _ = cv2.findContours(binary_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        target_contour = None
-        bx, by, bw_w, bw_h = int(target_x) - 15, int(target_y) - 15, 30, 30
-        
-        if len(contours) > 0:
-            best_dist = float('inf')
-            for cnt in contours:
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    c_x = M["m10"] / M["m00"]
-                    c_y = M["m01"] / M["m00"]
-                    dist = np.sqrt((c_x - target_x)**2 + (c_y - target_y)**2)
-                    if dist < best_dist:
-                        best_dist = dist
-                        target_contour = cnt
-            if target_contour is not None:
-                bx, by, bw_w, bw_h = cv2.boundingRect(target_contour)
                 
         # 3. Tạo bộ lọc mềm Gaussian từ mặt nạ nhị phân thực tế (sigma=8)
         filter_window = ndimage.gaussian_filter(binary_mask, sigma=8.0)
         filter_window = filter_window / (filter_window.max() + 1e-8)
         
-        # 4. Phục dựng pha thô
-        # Dịch phổ về tâm (shift)
-        y_grid = np.arange(H)
-        x_grid = np.arange(W)
-        mesh_y, mesh_x = np.meshgrid(y_grid, x_grid, indexing='ij')
-        exp_shift = np.exp(-2j * np.pi * (k[0] * mesh_x / W + k[1] * mesh_y / H))
-        I_shifted = I.astype(np.complex64) * exp_shift
-        I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
+        # 4. Phục dựng pha thô bằng cách DỊCH PHỔ TRỰC TIẾP TRONG MIỀN TẦN SỐ (Fourier-domain shift)
+        # Nhân phổ ban đầu với Gaussian Soft Window của búp phổ
+        I_fft_filtered = I_fft_raw * filter_window
         
-        # Tạo cửa sổ mềm dịch tâm từ mask_centered
-        I_fft_filtered = I_fft_shifted * mask_centered
-        U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_filtered))
+        # Dịch tâm của búp phổ về giữa DC bằng np.roll (theo kx, ky)
+        shift_y = int(round(-k[1]))
+        shift_x = int(round(-k[0]))
+        I_fft_centered = np.roll(I_fft_filtered, shift_y, axis=0)
+        I_fft_centered = np.roll(I_fft_centered, shift_x, axis=1)
+        
+        # Biến đổi Fourier ngược (IFFT) để khôi phục trường sóng phức giải điều chế và lấy pha
+        U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_centered))
         phase_rough = np.angle(U_rough)
         
         # --- Cột 1: Hologram gốc ---
@@ -219,31 +202,26 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         axes[i, 0].axis('off')
         axes[i, 0].set_title(f"Input Hologram ({suffix})", fontsize=11)
         
-        # --- Cột 2: Phổ Fourier gốc (kèm Bounding Box đỏ) ---
+        # --- Cột 2: Phổ Fourier gốc kèm ĐƯỜNG BAO ĐỎ (không dùng BBox elip/hộp nữa) ---
         axes[i, 1].imshow(I_fft_raw_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 1].axis('off')
         axes[i, 1].plot(cx, cy, 'g+', markersize=8) # DC center
         axes[i, 1].plot(target_x, target_y, 'rx', markersize=8) # Carrier center
-        if target_contour is not None:
-            rect = Rectangle((bx, by), width=bw_w, height=bw_h, color='red', fill=False, linestyle='--', linewidth=1.5)
-            axes[i, 1].add_patch(rect)
-        axes[i, 1].set_title(f"Fourier + BBox\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
         
-        # --- Cột 3: Mặt nạ nhị phân của búp phổ ---
-        axes[i, 2].imshow(binary_mask, cmap='gray')
+        # Vẽ đường bao contour của búp phổ đã chọn
+        axes[i, 1].contour(binary_mask, levels=[0.25], colors='red', linewidths=1.2, linestyles='--')
+        axes[i, 1].set_title(f"Fourier + Contour\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
+        
+        # --- Cột 3: Gaussian filter window ---
+        axes[i, 2].imshow(filter_window, cmap='jet')
         axes[i, 2].axis('off')
-        axes[i, 2].set_title("Selected Lobe Mask", fontsize=10)
+        axes[i, 2].set_title("Gaussian Soft Window", fontsize=10)
         
-        # --- Cột 4: Gaussian filter window ---
-        axes[i, 3].imshow(filter_window, cmap='jet')
+        # --- Cột 4: Pha thô giải điều chế ---
+        im_phase = axes[i, 3].imshow(phase_rough, cmap='jet', vmin=-np.pi, vmax=np.pi)
         axes[i, 3].axis('off')
-        axes[i, 3].set_title("Gaussian Soft Window", fontsize=10)
-        
-        # --- Cột 5: Pha thô giải điều chế ---
-        im_phase = axes[i, 4].imshow(phase_rough, cmap='jet', vmin=-np.pi, vmax=np.pi)
-        axes[i, 4].axis('off')
-        axes[i, 4].set_title("Demodulated Phase", fontsize=10)
-        fig.colorbar(im_phase, ax=axes[i, 4], fraction=0.046, pad=0.04)
+        axes[i, 3].set_title("Demodulated Phase", fontsize=10)
+        fig.colorbar(im_phase, ax=axes[i, 3], fraction=0.046, pad=0.04)
         
     plt.tight_layout()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
