@@ -104,8 +104,15 @@ def evaluate():
             k1 = batch['k1'].to(device)
             k2 = batch['k2'].to(device)
             
+            mask1 = batch.get('mask1', None)
+            mask2 = batch.get('mask2', None)
+            if mask1 is not None:
+                mask1 = mask1.to(device)
+            if mask2 is not None:
+                mask2 = mask2.to(device)
+                
             # Khôi phục trường sóng phức
-            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2)
+            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Tính toán Hologram tái tạo (Reconstructed Hologram) để kiểm chứng vật lý
             B, C, H, W = U1.shape

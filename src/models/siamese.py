@@ -40,15 +40,19 @@ class SiameseTeacherModel(nn.Module):
 
     def forward_single_branch(self, I, k_param, mask_override=None):
         """
-        Xử lý đơn nhánh (đối với một góc chiếu) sử dụng tham số học được.
+        Xử lý đơn nhánh (đối với một góc chiếu) sử dụng tham số sóng mang truyền vào.
         I: Hologram [B, 1, H, W]
-        k_param: nn.Parameter sóng mang học được [2] (kx, ky)
+        k_param: Sóng mang [B, 2] hoặc nn.Parameter [2] (kx, ky)
         mask_override: Tensor [B, 1, H, W] hoặc None chứa bộ lọc thích nghi
         """
         B = I.shape[0]
-        # Mở rộng sóng mang học được theo kích thước Batch
-        kx = k_param[0].expand(B)
-        ky = k_param[1].expand(B)
+        # Hỗ trợ cả sóng mang per-sample [B, 2] và sóng mang toàn cục [2]
+        if len(k_param.shape) == 2:
+            kx = k_param[:, 0]
+            ky = k_param[:, 1]
+        else:
+            kx = k_param[0].expand(B)
+            ky = k_param[1].expand(B)
         
         # 1. Giải điều chế khả vi miền Fourier
         U_rough = self.demodulator(I, kx, ky, mask_override=mask_override) # [B, 1, H, W] (phức)
@@ -65,15 +69,14 @@ class SiameseTeacherModel(nn.Module):
     def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
         Xử lý song song hai nhánh Siamese cho hai góc chiếu khác nhau.
-        Nhận k1 và k2 từ ngoài vào để tương thích signature, nhưng thực tế sử dụng
-        tham số nn.Parameter tự học self.k1 và self.k2.
-        Nhận thêm mask1, mask2 thích nghi tùy chọn từ dataloader của ảnh thực tế.
+        Sử dụng tần số sóng mang k1 và k2 đặc trưng cho từng mẫu (batch-specific)
+        truyền từ ngoài vào để đảm bảo dịch phổ chính xác cho dữ liệu thực nghiệm.
         """
-        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1 và mask1
-        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
+        # Nhánh 1: Góc chiếu thứ nhất sử dụng k1 truyền vào và mask1
+        U1, amp1, phase1 = self.forward_single_branch(I1, k1, mask_override=mask1)
         
-        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2 và mask2
-        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
+        # Nhánh 2: Góc chiếu thứ hai sử dụng k2 truyền vào và mask2
+        U2, amp2, phase2 = self.forward_single_branch(I2, k2, mask_override=mask2)
         
         return (U1, amp1, phase1), (U2, amp2, phase2)
 

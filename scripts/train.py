@@ -168,13 +168,8 @@ def train():
             # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
             (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
-            # Lấy các tham số sóng mang học được hiện tại từ model
-            B = I1.shape[0]
-            k1_learned = model.k1.unsqueeze(0).expand(B, -1)
-            k2_learned = model.k2.unsqueeze(0).expand(B, -1)
-            
-            # Tính toán hàm Loss sử dụng sóng mang học được
-            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1_learned, k2_learned, config)
+            # Tính toán hàm Loss sử dụng sóng mang động đặc trưng của từng mẫu (batch-specific)
+            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
             
             # Lan truyền ngược và tối ưu hóa
             loss.backward()
@@ -212,12 +207,8 @@ def train():
                 # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
                 (U1, _, _), (U2, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
-                # Sử dụng sóng mang học được để tính Loss đánh giá
-                B = I1.shape[0]
-                k1_learned = model.k1.unsqueeze(0).expand(B, -1)
-                k2_learned = model.k2.unsqueeze(0).expand(B, -1)
-                
-                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1_learned, k2_learned, config)
+                # Tính toán Loss đánh giá sử dụng sóng mang động đặc trưng của từng mẫu (batch-specific)
+                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
                 val_loss_accum += val_loss_dict['total_loss']
                 
         avg_val_loss = val_loss_accum / len(val_loader)
