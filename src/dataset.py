@@ -287,7 +287,7 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=8.0)
     mask_centered = mask_centered / (mask_centered.max() + 1e-8)
     
-    return rx, ry, mask_centered
+    return rx, ry, mask_centered, sideband_mask
 
 
 def generate_synthetic_phase_cell(H, W, rng):
@@ -534,8 +534,8 @@ class MultiAngleHologramDataset(Dataset):
             kx2, ky2 = estimate_carrier_frequency(I2)
 
             # 1. Ước lượng kích thước bộ lọc độc lập cho từng góc và lấy mặt nạ thích nghi mềm dạng 2D
-            rx1_est, ry1_est, mask1_centered = estimate_filter_size(I1, kx1, ky1)
-            rx2_est, ry2_est, mask2_centered = estimate_filter_size(I2, kx2, ky2)
+            rx1_est, ry1_est, mask1_centered, _ = estimate_filter_size(I1, kx1, ky1)
+            rx2_est, ry2_est, mask2_centered, _ = estimate_filter_size(I2, kx2, ky2)
 
             # 2. Đồng bộ kích thước bộ lọc chung (lấy max của cả hai góc)
             rx_shared = max(rx1_est, rx2_est)
