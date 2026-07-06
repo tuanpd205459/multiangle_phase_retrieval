@@ -172,64 +172,80 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         I_fft_raw = np.fft.fftshift(np.fft.fft2(I))
         I_fft_raw_log = np.log(np.abs(I_fft_raw) + 1e-6)
         
-        # 2. Chạy lại thuật toán tìm búp phổ nhị phân tương tự để vẽ trung gian
-        spec_smooth = ndimage.gaussian_filter(I_fft_raw_log, sigma=2.0)
+        # 2. Chạy thuật toán tìm 3 đối tượng và lấy thông tin vùng bậc +1
         norm_spec = (spec_smooth - spec_smooth.min()) / (spec_smooth.max() - spec_smooth.min() + 1e-8)
         norm_spec_u8 = (norm_spec * 255).astype(np.uint8)
         gtl, _ = cv2.threshold(norm_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         gtl = gtl / 255.0
         
-        current_thresh = gtl
+        T = gtl
         step = 0.01 * gtl
-        best_props = []
+        max_iter = 100
         best_bw = None
+        num_labels_prev = 0
         
-        for _ in range(200):
-            bw = (norm_spec >= current_thresh).astype(np.uint8) * 255
+        # Kernel cho morphology
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        
+        for _ in range(max_iter):
+            bw = (spec_smooth >= T).astype(np.uint8) * 255
             contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            props = []
+            bw_area = np.zeros_like(bw)
             for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area > 20:
-                    bx, by, bw_w, bw_h = cv2.boundingRect(cnt)
-                    M = cv2.moments(cnt)
-                    if M["m00"] != 0:
-                        centroid_x = M["m10"] / M["m00"]
-                        centroid_y = M["m01"] / M["m00"]
-                        props.append({
-                            'centroid': (centroid_x, centroid_y),
-                            'bbox': (bx, by, bw_w, bw_h),
-                            'contour': cnt
-                        })
-            if len(props) >= 2:
-                best_props = props
-                best_bw = bw
-            if len(props) <= 3 and len(props) >= 2:
+                if cv2.contourArea(cnt) > 30:
+                    cv2.drawContours(bw_area, [cnt], -1, 255, -1)
+            bw_close = cv2.morphologyEx(bw_area, cv2.MORPH_CLOSE, kernel_close)
+            contours_fill, _ = cv2.findContours(bw_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            bw_filled = np.zeros_like(bw_close)
+            cv2.drawContours(bw_filled, contours_fill, -1, 255, -1)
+            bw_open = cv2.morphologyEx(bw_filled, cv2.MORPH_OPEN, kernel_open)
+            
+            num_labels, _ = cv2.connectedComponents(bw_open)
+            num_objects = num_labels - 1
+            
+            if num_objects == 3:
+                best_bw = bw_open
                 break
-            current_thresh += step
-            if current_thresh >= 1.0:
+            elif num_objects == 2 and (best_bw is None or num_labels_prev != 3):
+                best_bw = bw_open
+                
+            num_labels_prev = num_objects
+            T += step
+            if T >= 1.0:
                 break
                 
-        # Tìm búp phổ đích gần (cx+k[0], cy+k[1]) nhất
+        if best_bw is None:
+            best_bw = bw_open
+            
+        contours_final, _ = cv2.findContours(best_bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         target_x = cx + k[0]
         target_y = cy + k[1]
         best_dist = float('inf')
-        target_prop = None
-        for p in best_props:
-            dist = np.sqrt((p['centroid'][0] - target_x)**2 + (p['centroid'][1] - target_y)**2)
-            if dist < best_dist:
-                best_dist = dist
-                target_prop = p
-                
-        # Tạo mặt nạ nhị phân của búp phổ
-        binary_mask = np.zeros((H, W), dtype=np.float32)
-        if target_prop is not None:
-            bx, by, bw_w, bw_h = target_prop['bbox']
-            roi_mask = np.zeros((H, W), dtype=np.uint8)
-            cv2.drawContours(roi_mask, [target_prop['contour']], -1, 255, -1)
-            binary_mask[by:by+bw_h, bx:bx+bw_w] = (roi_mask[by:by+bw_h, bx:bx+bw_w] > 0).astype(np.float32)
+        target_contour = None
         
-        # 3. Tạo bộ lọc mềm Gaussian từ mặt nạ nhị phân (sigma=8)
+        for cnt in contours_final:
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                c_x = M["m10"] / M["m00"]
+                c_y = M["m01"] / M["m00"]
+                dist = np.sqrt((c_x - target_x)**2 + (c_y - target_y)**2)
+                if dist < best_dist:
+                    best_dist = dist
+                    target_contour = cnt
+                    
+        # Tạo mặt nạ thích nghi thực tế dựa trên Convex Hull
+        binary_mask = np.zeros((H, W), dtype=np.float32)
+        bx, by, bw_w, bw_h = 0, 0, 15, 15
+        if target_contour is not None:
+            hull = cv2.convexHull(target_contour)
+            cv2.drawContours(binary_mask, [hull], -1, 1.0, -1)
+            bx, by, bw_w, bw_h = cv2.boundingRect(hull)
+        else:
+            cv2.circle(binary_mask, (int(target_x), int(target_y)), 15, 1.0, -1)
+            bx, by = int(target_x) - 7, int(target_y) - 7
+            
+        # 3. Tạo bộ lọc mềm Gaussian từ mặt nạ nhị phân thực tế (sigma=8)
         filter_window = ndimage.gaussian_filter(binary_mask, sigma=8.0)
         filter_window = filter_window / (filter_window.max() + 1e-8)
         
@@ -242,19 +258,17 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         I_shifted = I.astype(np.complex64) * exp_shift
         I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
         
-        # Lọc bằng Gaussian window đã được dịch về tâm (DC)
-        # Tìm lại Bounding Box đã được dịch về tâm
-        bx_c, by_c = bx - k[0], by - k[1]
-        binary_mask_c = np.zeros((H, W), dtype=np.float32)
-        by_c_start = int(max(0, by_c))
-        by_c_end = int(min(H, by_c + bw_h))
-        bx_c_start = int(max(0, bx_c))
-        bx_c_end = int(min(W, bx_c + bw_w))
-        binary_mask_c[by_c_start:by_c_end, bx_c_start:bx_c_end] = 1.0
+        # Dịch chuyển mặt nạ nhị phân về tâm DC (roll theo -kx, -ky)
+        shift_x = int(round(-k[0]))
+        shift_y = int(round(-k[1]))
+        binary_mask_c = np.roll(binary_mask, shift_y, axis=0)
+        binary_mask_c = np.roll(binary_mask_c, shift_x, axis=1)
         
+        # Tạo cửa sổ mềm dịch tâm
         filter_window_c = ndimage.gaussian_filter(binary_mask_c, sigma=8.0)
         filter_window_c = filter_window_c / (filter_window_c.max() + 1e-8)
         
+        # Nhân phổ dịch tâm với bộ lọc mềm
         I_fft_filtered = I_fft_shifted * filter_window_c
         U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_filtered))
         phase_rough = np.angle(U_rough)
