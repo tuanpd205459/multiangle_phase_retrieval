@@ -6,198 +6,196 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, thresh_ratio=0.85):
+def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, min_area=20):
     """
-    Ước lượng tự động tần số sóng mang (kx, ky) sử dụng thuật toán tránh DC:
-      1. Tính phổ Log-amplitude mịn.
-      2. Tự động phát hiện vùng DC trong bán kính trung tâm r0=60 và phân ngưỡng Otsu.
-      3. Giãn nở vùng DC tạo Forbidden Zone (vùng cấm).
-      4. Tìm đỉnh có biên độ lớn nhất ngoài vùng cấm ở nửa bên phải của phổ (kx > 0).
+    Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel sử dụng thuật toán MATLAB:
+      1. Tăng dần ngưỡng phân ngưỡng động cho đến khi số lượng Connected Components (vùng liên thông)
+         lớn hơn min_area chỉ còn <= 3 vùng (DC, +1, -1).
+      2. Chỉ chọn các vùng ở nửa bên phải (kx > 0) để lấy đúng bậc +1.
+      3. Chọn vùng xa tâm nhất trong số đó, tính trọng tâm làm kx, ky.
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
     cx, cy = W // 2, H // 2
     
-    # Tính phổ Log-amplitude mịn
+    # 1. Chuẩn hóa phổ Log-amplitude mịn về dải [0, 1]
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
     spec = np.log(1.0 + amp + 1e-6)
     spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
     
-    # Tạo lưới tọa độ
+    norm_spec = (spec_smooth - spec_smooth.min()) / (spec_smooth.max() - spec_smooth.min() + 1e-8)
+    
+    # Tính ngưỡng Otsu khởi đầu
+    norm_spec_u8 = (norm_spec * 255).astype(np.uint8)
+    gtl, _ = cv2.threshold(norm_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    gtl = gtl / 255.0
+    
+    current_thresh = gtl
+    step = 0.01 * gtl
+    max_iter = 200
+    
+    best_props = []
+    
+    # 2. Vòng lặp phân ngưỡng động đến khi chỉ còn <= 3 vùng (thường là DC, +1, -1)
+    for _ in range(max_iter):
+        bw = (norm_spec >= current_thresh).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        props = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > min_area:
+                M = cv2.moments(cnt)
+                if M["m00"] != 0:
+                    centroid_x = M["m10"] / M["m00"]
+                    centroid_y = M["m01"] / M["m00"]
+                    props.append({
+                        'centroid': (centroid_x, centroid_y),
+                        'contour': cnt
+                    })
+                    
+        if len(props) >= 2:
+            best_props = props
+            
+        if len(props) <= 3 and len(props) >= 2:
+            break
+            
+        current_thresh += step
+        if current_thresh >= 1.0:
+            break
+            
+    props = best_props
+    
+    # 3. Lọc lấy các ứng viên ở nửa bên phải (X > cx + 10)
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
     dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
     
-    # Bắt vùng DC tự động
-    r0 = 60
-    center_mask = dist_from_dc <= r0
-    center_spec = spec_smooth.copy()
-    center_spec[~center_mask] = 0
-    
-    # Chuẩn hóa để chạy ngưỡng Otsu
-    c_min = center_spec.min()
-    c_max = center_spec.max()
-    if c_max - c_min > 1e-8:
-        center_spec_gray = (center_spec - c_min) / (c_max - c_min)
-        center_spec_u8 = (center_spec_gray * 255).astype(np.uint8)
-        _, bw_dc = cv2.threshold(center_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        bw_dc = bw_dc > 0
+    valid_candidates = []
+    for p in props:
+        c_x, c_y = p['centroid']
+        if c_x > cx + 10:
+            dist = np.sqrt((c_x - cx)**2 + (c_y - cy)**2)
+            # Ràng buộc khoảng cách nằm trong dải tìm kiếm vật lý
+            if dist >= search_radius_min and dist <= search_radius_max:
+                valid_candidates.append((dist, p))
+                
+    if len(valid_candidates) > 0:
+        # Chọn vùng xa tâm nhất ở bên phải
+        _, target_prop = max(valid_candidates, key=lambda x: x[0])
+        px, py = target_prop['centroid']
     else:
-        bw_dc = dist_from_dc <= 20
+        # Fallback nếu không tìm thấy: dùng thuật toán cũ để tìm đỉnh sáng nhất bên phải
+        search_space = spec_smooth.copy()
+        search_space[dist_from_dc < search_radius_min] = 0
+        search_space[dist_from_dc > search_radius_max] = 0
+        search_space[X < cx + 12] = 0
+        max_idx = np.argmax(search_space)
+        py, px = np.unravel_index(max_idx, search_space.shape)
         
-    # Giãn nở vùng DC tạo Forbidden Zone để ngăn chặn triệt để lọt phổ vào DC
-    margin_dc = 10
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_dc + 1, 2 * margin_dc + 1))
-    forbidden_zone = cv2.dilate(bw_dc.astype(np.uint8), kernel) > 0
-    
-    # Chỉ tìm kiếm đỉnh bậc +1 ở nửa bên phải (X >= cx + 12 để tránh leakage trực tiếp)
-    search_space = spec_smooth.copy()
-    search_space[forbidden_zone] = 0
-    search_space[X < cx + 12] = 0  # Tránh DC cột trung tâm
-    
-    # Lọc theo annulus khoảng cách của búp phổ
-    search_mask = (dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max)
-    search_space[~search_mask] = 0
-    
-    max_val = np.max(search_space)
-    if max_val == 0:
-        # Fallback nếu không có tín hiệu nào thỏa mãn
-        return float(search_radius_min + 10), 0.0
-        
-    max_idx = np.argmax(search_space)
-    py, px = np.unravel_index(max_idx, search_space.shape)
-    
-    # Tính trọng tâm xung quanh hạt nhân đỉnh này để đạt độ chính xác sub-pixel
+    # Tính trọng tâm tinh (sub-pixel) bằng phổ biên độ
     local_r = 7
-    local_mask = (np.sqrt((X - px)**2 + (Y - py)**2) <= local_r) & search_mask & ~forbidden_zone
+    local_mask = (np.sqrt((X - px)**2 + (Y - py)**2) <= local_r) & (dist_from_dc >= search_radius_min)
     weights = amp[local_mask]
     total_weight = np.sum(weights)
     
     if total_weight > 0:
-        centroid_y = np.sum(Y[local_mask] * weights) / total_weight
-        centroid_x = np.sum(X[local_mask] * weights) / total_weight
-        ky = float(centroid_y - cy)
-        kx = float(centroid_x - cx)
+        ky = float(np.sum(Y[local_mask] * weights) / total_weight - cy)
+        kx = float(np.sum(X[local_mask] * weights) / total_weight - cx)
     else:
         ky = float(py - cy)
         kx = float(px - cx)
         
     return kx, ky
 
-def estimate_filter_size(I, kx, ky, energy_thresh=0.15, min_rx=15.0, min_ry=15.0, margin=5.0):
+def estimate_filter_size(I, kx, ky, min_area=20, min_rx=15.0, min_ry=15.0, margin=5.0):
     """
-    Ước lượng kích thước bộ lọc (rx, ry) cho búp phổ +1 dựa trên thuật toán loang vùng (Region Growing):
-      1. Tạo Forbidden Zone (vùng cấm) quanh DC tương tự.
-      2. Loang vùng từ đỉnh sóng mang (cx+kx, cy+ky) sử dụng cv2.floodFill tốc độ cao.
-      3. Thực hiện morphology để làm mịn và điền lỗ cho búp phổ thu được.
-      4. Tính bounding box rx, ry và cap cứng cạnh trái để tránh đè lên DC.
+    Ước lượng kích thước bộ lọc (rx, ry) dựa trên Bounding Box của búp phổ:
+      1. Chạy phân ngưỡng động để cô lập búp phổ +1 tương tự.
+      2. Định vị búp phổ gần vị trí sóng mang (cx+kx, cy+ky) đã biết.
+      3. Lấy Bounding Box của vùng liên thông để tính rx, ry (half-width, half-height).
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
     cx, cy = W // 2, H // 2
     
-    # 1. FFT và tính phổ log mịn (dành cho phát hiện DC) và phổ biên độ mịn (dành cho loang búp phổ)
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
     spec = np.log(1.0 + amp + 1e-6)
     spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
-    amp_smooth = ndimage.gaussian_filter(amp, sigma=2.0)
     
-    # 2. Tạo Forbidden Zone quanh DC để tránh loang lấn vào DC (dùng spec_smooth)
-    y_coords = np.arange(H)
-    x_coords = np.arange(W)
-    X, Y = np.meshgrid(x_coords, y_coords)
-    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    norm_spec = (spec_smooth - spec_smooth.min()) / (spec_smooth.max() - spec_smooth.min() + 1e-8)
     
-    r0 = 60
-    center_mask = dist_from_dc <= r0
-    center_spec = spec_smooth.copy()
-    center_spec[~center_mask] = 0
+    norm_spec_u8 = (norm_spec * 255).astype(np.uint8)
+    gtl, _ = cv2.threshold(norm_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    gtl = gtl / 255.0
     
-    c_min = center_spec.min()
-    c_max = center_spec.max()
-    if c_max - c_min > 1e-8:
-        center_spec_gray = (center_spec - c_min) / (c_max - c_min)
-        center_spec_u8 = (center_spec_gray * 255).astype(np.uint8)
-        _, bw_dc = cv2.threshold(center_spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        bw_dc = bw_dc > 0
-    else:
-        bw_dc = dist_from_dc <= 20
+    current_thresh = gtl
+    step = 0.01 * gtl
+    max_iter = 200
+    
+    best_props = []
+    
+    for _ in range(max_iter):
+        bw = (norm_spec >= current_thresh).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-    margin_dc = 10
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * margin_dc + 1, 2 * margin_dc + 1))
-    forbidden_zone = cv2.dilate(bw_dc.astype(np.uint8), kernel) > 0
+        props = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > min_area:
+                bx, by, bw_w, bw_h = cv2.boundingRect(cnt)
+                M = cv2.moments(cnt)
+                if M["m00"] != 0:
+                    centroid_x = M["m10"] / M["m00"]
+                    centroid_y = M["m01"] / M["m00"]
+                    props.append({
+                        'centroid': (centroid_x, centroid_y),
+                        'bbox': (bx, by, bw_w, bw_h)
+                    })
+                    
+        if len(props) >= 2:
+            best_props = props
+            
+        if len(props) <= 3 and len(props) >= 2:
+            break
+            
+        current_thresh += step
+        if current_thresh >= 1.0:
+            break
+            
+    props = best_props
     
-    # Vị trí hạt giống (seed)
-    seed_x = int(np.clip(cx + kx, 0, W - 1))
-    seed_y = int(np.clip(cy + ky, 0, H - 1))
+    # Tìm búp phổ có tâm gần tọa độ sóng mang đã biết (cx+kx, cy+ky) nhất
+    target_x = cx + kx
+    target_y = cy + ky
     
-    # 3. LOẠI BỎ VÙNG DC VÀ NỬA BÊN TRÁI: Gán năng lượng vùng DC và toàn bộ nửa bên trái về 0
-    amp_smooth_no_dc = amp_smooth.copy()
-    amp_smooth_no_dc[forbidden_zone] = 0.0
-    amp_smooth_no_dc[X < cx + 12] = 0.0  # Chỉ giữ lại nửa bên phải (bậc +1)
+    best_dist = float('inf')
+    target_prop = None
     
-    # 4. Seeded Region Growing sử dụng cv2.floodFill (C++ optimized) trên phổ đã sạch DC và nửa trái
-    peak_amp = amp_smooth_no_dc[seed_y, seed_x]
-    
-    # Mask cho floodFill cần kích thước (H+2, W+2)
-    ff_mask = np.zeros((H + 2, W + 2), dtype=np.uint8)
-    ff_mask[1:-1, 1:-1] = forbidden_zone.astype(np.uint8)
-    
-    # Ngưỡng dừng loang: dừng khi biên độ giảm xuống 10% biên độ đỉnh
-    alpha = 0.10
-    lo_diff = float((1.0 - alpha) * peak_amp)
-    up_diff = float(999.0 * peak_amp)  # cho phép loang vào vùng có biên độ cao hơn thoải mái
-    
-    flood_img = amp_smooth_no_dc
-    try:
-        cv2.floodFill(
-            image=flood_img,
-            mask=ff_mask,
-            seedPoint=(seed_x, seed_y),
-            newVal=0,
-            loDiff=lo_diff,
-            upDiff=up_diff,
-            flags=4 | cv2.FLOODFILL_FIXED_RANGE
-        )
-        mask = ff_mask[1:-1, 1:-1] > 0
-    except Exception:
-        # Fallback nếu floodFill lỗi
-        mask = np.sqrt((X - seed_x)**2 + (Y - seed_y)**2) <= min_rx
-        
-    # Loại bỏ vùng cấm ra khỏi kết quả loang
-    mask[forbidden_zone] = False
-    
-    # 4. Hậu xử lý Morphology: imclose và điền lỗ
-    mask_u8 = mask.astype(np.uint8) * 255
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, close_kernel)
-    
-    # Điền lỗ (fill holes)
-    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    mask_filled = np.zeros_like(mask_u8)
-    if len(contours) > 0:
-        cv2.drawContours(mask_filled, contours, -1, 255, -1)
+    for p in props:
+        c_x, c_y = p['centroid']
+        dist = np.sqrt((c_x - target_x)**2 + (c_y - target_y)**2)
+        if dist < best_dist:
+            best_dist = dist
+            target_prop = p
+            
+    if target_prop is not None:
+        bx, by, bw_w, bw_h = target_prop['bbox']
+        # rx_est và ry_est là một nửa chiều rộng và chiều cao của Bounding Box + margin
+        rx_est = float(bw_w) / 2.0 + margin
+        ry_est = float(bw_h) / 2.0 + margin
     else:
-        mask_filled = mask_u8
-        
-    # 5. Xác định bounding box rx, ry từ mask
-    y_idx, x_idx = np.where(mask_filled > 0)
-    if len(x_idx) > 0:
-        rx_est = float(np.max(np.abs(x_idx - seed_x))) + margin
-        ry_est = float(np.max(np.abs(y_idx - seed_y))) + margin
-    else:
+        # Fallback nếu không khớp được vùng nào
         rx_est, ry_est = min_rx, min_ry
         
-    # 6. Ràng buộc an toàn tuyệt đối tránh đè lên DC
-    # Cạnh trái của bộ lọc (seed_x - rx) phải cách DC (cx) một khoảng an toàn (dc_gap_x = 12px)
+    # Áp dụng giới hạn an toàn tránh DC
     dc_gap_x = 12.0
     max_rx_safe = max(abs(kx) - dc_gap_x, min_rx)
     rx = min(max(rx_est, min_rx), max_rx_safe)
     
-    # Ràng buộc ky tương tự
     if abs(ky) > 10.0:
         dc_gap_y = 12.0
         max_ry_safe = max(abs(ky) - dc_gap_y, min_ry)
