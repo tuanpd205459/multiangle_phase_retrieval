@@ -6,7 +6,7 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 
-def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, min_area=30):
+def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=120, min_area=30):
     """
     Ước lượng tự động tần số sóng mang (kx, ky) dạng sub-pixel sử dụng thuật toán MATLAB cải tiến:
       1. Loại bỏ vùng DC trong bán kính Rdc = 0.06 * min(H, W).
