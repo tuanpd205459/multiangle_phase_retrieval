@@ -24,14 +24,14 @@ class DifferentiableDemodulator(nn.Module):
         self.filter_radius_x = nn.Parameter(torch.tensor(float(filter_radius_x), dtype=torch.float32))
         self.filter_radius_y = nn.Parameter(torch.tensor(float(filter_radius_y), dtype=torch.float32))
 
-    def forward(self, I, kx, ky, rx_override=None, ry_override=None):
+    def forward(self, I, kx, ky, rx_override=None, ry_override=None, mask_override=None):
         """
-        I:           Tensor hologram cường độ [B, 1, H, W]
-        kx, ky:      Tần số sóng mang [B] (pixel lệch so với tâm DC)
-        rx_override: [B] hoặc scalar — bán kính bộ lọc trục X per-sample (từ estimate_filter_size).
-                     Nếu None → dùng self.filter_radius_x (learnable global).
-        ry_override: [B] hoặc scalar — bán kính bộ lọc trục Y per-sample.
-                     Nếu None → dùng self.filter_radius_y (learnable global).
+        I:             Tensor hologram cường độ [B, 1, H, W]
+        kx, ky:        Tần số sóng mang [B] (pixel lệch so với tâm DC)
+        rx_override:   Bán kính bộ lọc X (fallback nếu không truyền mask_override)
+        ry_override:   Bán kính bộ lọc Y (fallback nếu không truyền mask_override)
+        mask_override: Tensor [B, 1, H, W] chứa mặt nạ lọc thích nghi đã làm mịn (Gaussian window)
+                       tương thích đúng ý dạng búp phổ thực tế.
         """
         B, C, H, W = I.shape
         device = I.device
@@ -54,40 +54,37 @@ class DifferentiableDemodulator(nn.Module):
         # 3. FFT → bậc +1 giờ nằm tại tâm (H//2, W//2)
         I_fft = fft.fftshift(fft.fft2(I_complex_shifted), dim=(-2, -1))
 
-        # 4. Xác định bán kính bộ lọc rx, ry
-        #    Ưu tiên: rx_override (từ estimate_filter_size) > learnable global
-        if rx_override is not None:
-            # Per-sample rx: [B] → [B, 1, 1, 1]
-            rx = torch.as_tensor(rx_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
-            rx = torch.clamp(rx, min=5.0)
+        # 4. Áp dụng bộ lọc
+        if mask_override is not None:
+            # Sử dụng trực tiếp mặt nạ thích nghi mềm (Gaussian Window)
+            mask = mask_override.to(device)
         else:
-            # Global learnable (chế độ synthetic / fine-tune)
-            rx = torch.clamp(self.filter_radius_x, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
+            # Fallback dùng bộ lọc hình chữ nhật mềm nếu không có mask_override
+            if rx_override is not None:
+                rx = torch.as_tensor(rx_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
+                rx = torch.clamp(rx, min=5.0)
+            else:
+                rx = torch.clamp(self.filter_radius_x, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
 
-        if ry_override is not None:
-            ry = torch.as_tensor(ry_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
-            ry = torch.clamp(ry, min=5.0)
-        else:
-            ry = torch.clamp(self.filter_radius_y, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
+            if ry_override is not None:
+                ry = torch.as_tensor(ry_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
+                ry = torch.clamp(ry, min=5.0)
+            else:
+                ry = torch.clamp(self.filter_radius_y, min=5.0).view(1, 1, 1, 1).expand(B, 1, 1, 1)
 
-        # KHÔNG ràng buộc max_rx = kx * 0.8 nữa!
-        # Kích thước bộ lọc được đo từ búp phổ thực tế bởi estimate_filter_size()
-        # → bộ lọc tự bao phủ toàn bộ búp phổ +1 bất kể kx nhỏ hay lớn.
+            y_dist = mesh_y - H // 2
+            x_dist = mesh_x - W // 2
+            x_abs = torch.abs(x_dist).view(1, 1, H, W)
+            y_abs = torch.abs(y_dist).view(1, 1, H, W)
 
-        # 5. Áp dụng mặt nạ HCN mềm (Soft Sigmoid Rectangular Mask) tại tâm phổ
-        y_dist = mesh_y - H // 2  # [H, W]
-        x_dist = mesh_x - W // 2
-        x_abs = torch.abs(x_dist).view(1, 1, H, W)  # [1,1,H,W]
-        y_abs = torch.abs(y_dist).view(1, 1, H, W)
-
-        temperature = 0.5  # mềm hơn một chút để gradient mượt
-        mask_x = torch.sigmoid((rx - x_abs) / temperature)   # [B,1,H,W]
-        mask_y = torch.sigmoid((ry - y_abs) / temperature)
-        mask = mask_x * mask_y                                # [B,1,H,W]
+            temperature = 0.5
+            mask_x = torch.sigmoid((rx - x_abs) / temperature)
+            mask_y = torch.sigmoid((ry - y_abs) / temperature)
+            mask = mask_x * mask_y
 
         I_fft_filtered = I_fft * mask
 
-        # 6. IFFT → trường sóng phức đã giải điều chế
+        # 5. IFFT → trường sóng phức đã giải điều chế
         U_demod = fft.ifft2(fft.ifftshift(I_fft_filtered, dim=(-2, -1)))
 
         return U_demod

@@ -38,11 +38,12 @@ class SiameseTeacherModel(nn.Module):
         # 3. Mạng U-Net chung trọng số (Shared Weights)
         self.unet = PhaseRefiningUNet()
 
-    def forward_single_branch(self, I, k_param):
+    def forward_single_branch(self, I, k_param, mask_override=None):
         """
         Xử lý đơn nhánh (đối với một góc chiếu) sử dụng tham số học được.
         I: Hologram [B, 1, H, W]
         k_param: nn.Parameter sóng mang học được [2] (kx, ky)
+        mask_override: Tensor [B, 1, H, W] hoặc None chứa bộ lọc thích nghi
         """
         B = I.shape[0]
         # Mở rộng sóng mang học được theo kích thước Batch
@@ -50,7 +51,7 @@ class SiameseTeacherModel(nn.Module):
         ky = k_param[1].expand(B)
         
         # 1. Giải điều chế khả vi miền Fourier
-        U_rough = self.demodulator(I, kx, ky) # [B, 1, H, W] (phức)
+        U_rough = self.demodulator(I, kx, ky, mask_override=mask_override) # [B, 1, H, W] (phức)
         
         # 2. Tinh chỉnh bằng mạng U-Net
         U_refined = self.unet(U_rough)        # [B, 1, H, W] (phức)
@@ -61,17 +62,18 @@ class SiameseTeacherModel(nn.Module):
         
         return U_refined, amplitude, phase
 
-    def forward(self, I1, k1, I2, k2):
+    def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
         Xử lý song song hai nhánh Siamese cho hai góc chiếu khác nhau.
         Nhận k1 và k2 từ ngoài vào để tương thích signature, nhưng thực tế sử dụng
         tham số nn.Parameter tự học self.k1 và self.k2.
+        Nhận thêm mask1, mask2 thích nghi tùy chọn từ dataloader của ảnh thực tế.
         """
-        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1
-        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1)
+        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1 và mask1
+        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
         
-        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2
-        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2)
+        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2 và mask2
+        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
         
         return (U1, amp1, phase1), (U2, amp2, phase2)
 

@@ -81,11 +81,12 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y1 = cy + k1[1]
         axes[i, 1].plot(peak_x1, peak_y1, 'rx', markersize=8, label='Carrier')
         
-        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp
-        # Dùng estimate_filter_size() để đo kích thước búp phổ +1 thực tế
-        rx1, ry1 = estimate_filter_size(I1, k1[0], k1[1])
-        rect1 = Rectangle((peak_x1 - rx1, peak_y1 - ry1), width=2*rx1, height=2*ry1, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 1].add_patch(rect1)
+        # Vẽ mặt nạ búp phổ thích nghi mềm dạng đường bao (Contour) màu đỏ
+        rx1, ry1, mask1_centered = estimate_filter_size(I1, k1[0], k1[1])
+        # Dịch chuyển mask về đúng tọa độ của búp phổ để vẽ
+        mask1_orig = np.roll(mask1_centered, int(round(k1[1])), axis=0)
+        mask1_orig = np.roll(mask1_orig, int(round(k1[0])), axis=1)
+        axes[i, 1].contour(mask1_orig, levels=[0.25], colors='red', linewidths=1.2, linestyles='--')
         
         # --- Cột 3: Hologram 2 ---
         axes[i, 2].imshow(I2, cmap='gray')
@@ -107,10 +108,11 @@ def save_dataset_preview(dataset, output_path, num_samples=3, filter_radius=50):
         peak_y2 = cy + k2[1]
         axes[i, 3].plot(peak_x2, peak_y2, 'rx', markersize=8)
         
-        # Vẽ mặt nạ hình chữ nhật bộ lọc thông thấp
-        rx2, ry2 = estimate_filter_size(I2, k2[0], k2[1])
-        rect2 = Rectangle((peak_x2 - rx2, peak_y2 - ry2), width=2*rx2, height=2*ry2, color='red', fill=False, linestyle='--', linewidth=1.5)
-        axes[i, 3].add_patch(rect2)
+        # Vẽ mặt nạ búp phổ thích nghi mềm dạng đường bao (Contour) màu đỏ cho góc 2
+        rx2, ry2, mask2_centered = estimate_filter_size(I2, k2[0], k2[1])
+        mask2_orig = np.roll(mask2_centered, int(round(k2[1])), axis=0)
+        mask2_orig = np.roll(mask2_orig, int(round(k2[0])), axis=1)
+        axes[i, 3].contour(mask2_orig, levels=[0.25], colors='red', linewidths=1.2, linestyles='--')
         
         # --- Cột 5: Ground Truth Phase (nếu có) ---
         if cols == 5:

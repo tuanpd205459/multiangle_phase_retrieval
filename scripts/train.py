@@ -155,10 +155,18 @@ def train():
             k1 = batch['k1'].to(device)
             k2 = batch['k2'].to(device)
             
+            # Trích xuất mặt nạ thích nghi mềm 2D nếu có (chế độ REAL)
+            mask1 = batch.get('mask1', None)
+            mask2 = batch.get('mask2', None)
+            if mask1 is not None:
+                mask1 = mask1.to(device)
+            if mask2 is not None:
+                mask2 = mask2.to(device)
+            
             optimizer.zero_grad()
             
-            # Chạy mô hình Siamese
-            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2)
+            # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
+            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Lấy các tham số sóng mang học được hiện tại từ model
             B = I1.shape[0]
@@ -194,8 +202,15 @@ def train():
                 k1 = batch['k1'].to(device)
                 k2 = batch['k2'].to(device)
                 
-                # Chạy mô hình Siamese
-                (U1, _, _), (U2, _, _) = model(I1, k1, I2, k2)
+                mask1 = batch.get('mask1', None)
+                mask2 = batch.get('mask2', None)
+                if mask1 is not None:
+                    mask1 = mask1.to(device)
+                if mask2 is not None:
+                    mask2 = mask2.to(device)
+                
+                # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
+                (U1, _, _), (U2, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
                 # Sử dụng sóng mang học được để tính Loss đánh giá
                 B = I1.shape[0]

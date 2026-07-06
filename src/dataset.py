@@ -233,14 +233,17 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
                 best_dist = dist
                 target_contour = cnt
                 
+    # Tạo mặt nạ nhị phân của búp phổ dựa trên Convex Hull
+    sideband_mask = np.zeros((H, W), dtype=np.float32)
     if target_contour is not None:
-        # Tính Convex Hull (Bao lồi) giống bwconvhull của MATLAB
         hull = cv2.convexHull(target_contour)
+        cv2.drawContours(sideband_mask, [hull], -1, 1.0, -1)
         bx, by, bw_w, bw_h = cv2.boundingRect(hull)
         rx_est = float(bw_w) / 2.0 + margin
         ry_est = float(bw_h) / 2.0 + margin
     else:
         rx_est, ry_est = min_rx, min_ry
+        cv2.circle(sideband_mask, (int(target_x), int(target_y)), int(min_rx), 1.0, -1)
         
     # Ràng buộc an toàn tránh đè lên DC
     dc_gap_x = 12.0
@@ -254,7 +257,17 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     else:
         ry = max(ry_est, min_ry)
         
-    return rx, ry
+    # Dịch chuyển mặt nạ về tâm DC (roll theo -kx, -ky)
+    shift_x = int(round(-kx))
+    shift_y = int(round(-ky))
+    sideband_mask_centered = np.roll(sideband_mask, shift_y, axis=0)
+    sideband_mask_centered = np.roll(sideband_mask_centered, shift_x, axis=1)
+    
+    # Làm mịn biên mềm Gaussian (sigma = 8.0) đúng chuẩn MATLAB
+    mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=8.0)
+    mask_centered = mask_centered / (mask_centered.max() + 1e-8)
+    
+    return rx, ry, mask_centered
 
 
 def generate_synthetic_phase_cell(H, W, rng):
@@ -500,16 +513,15 @@ class MultiAngleHologramDataset(Dataset):
             kx1, ky1 = estimate_carrier_frequency(I1)
             kx2, ky2 = estimate_carrier_frequency(I2)
 
-            # 1. Ước lượng kích thước bộ lọc độc lập cho từng góc
-            rx1_est, ry1_est = estimate_filter_size(I1, kx1, ky1)
-            rx2_est, ry2_est = estimate_filter_size(I2, kx2, ky2)
+            # 1. Ước lượng kích thước bộ lọc độc lập cho từng góc và lấy mặt nạ thích nghi mềm dạng 2D
+            rx1_est, ry1_est, mask1_centered = estimate_filter_size(I1, kx1, ky1)
+            rx2_est, ry2_est, mask2_centered = estimate_filter_size(I2, kx2, ky2)
 
             # 2. Đồng bộ kích thước bộ lọc chung (lấy max của cả hai góc)
-            # Vì cùng mẫu vật và hệ thống quang học thì búp phổ phải có kích thước vật lý như nhau
             rx_shared = max(rx1_est, rx2_est)
             ry_shared = max(ry1_est, ry2_est)
 
-            # 3. Áp dụng giới hạn an toàn tránh DC riêng biệt cho từng góc dựa trên kx, ky của nó
+            # 3. Áp dụng giới hạn an toàn tránh DC riêng biệt cho từng góc
             dc_gap_x = 12.0
             min_rx = 15.0
             min_ry = 15.0
@@ -540,13 +552,19 @@ class MultiAngleHologramDataset(Dataset):
             filter1_tensor = torch.tensor([rx1, ry1], dtype=torch.float32)
             filter2_tensor = torch.tensor([rx2, ry2], dtype=torch.float32)
             
+            # Chuyển đổi các mặt nạ 2D thích nghi sang Tensor dạng PyTorch [1, H, W]
+            mask1_tensor = torch.from_numpy(mask1_centered).unsqueeze(0).to(torch.float32)
+            mask2_tensor = torch.from_numpy(mask2_centered).unsqueeze(0).to(torch.float32)
+            
             return {
                 'I1': I1_tensor,
                 'I2': I2_tensor,
                 'k1': k1_tensor,
                 'k2': k2_tensor,
-                'filter1': filter1_tensor,  # [rx1, ry1] ước lượng từ phổ thực
-                'filter2': filter2_tensor,  # [rx2, ry2] ước lượng từ phổ thực
+                'filter1': filter1_tensor,  # [rx1, ry1]
+                'filter2': filter2_tensor,  # [rx2, ry2]
+                'mask1': mask1_tensor,      # Bộ lọc thích nghi 2D cho góc 1 (Centered)
+                'mask2': mask2_tensor,      # Bộ lọc thích nghi 2D cho góc 2 (Centered)
                 'phi_gt': torch.zeros_like(I1_tensor)
             }
 
