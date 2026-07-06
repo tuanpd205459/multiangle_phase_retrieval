@@ -179,9 +179,12 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         target_x = cx + k[0]
         target_y = cy + k[1]
                 
-        # 3. Tạo bộ lọc mềm Gaussian từ mặt nạ nhị phân thực tế (sigma=8)
-        filter_window = ndimage.gaussian_filter(binary_mask, sigma=8.0)
+        # 3. Tạo bộ lọc mềm Gaussian từ mặt nạ nhị phân thực tế (sigma=4.0)
+        filter_window = ndimage.gaussian_filter(binary_mask, sigma=4.0)
         filter_window = filter_window / (filter_window.max() + 1e-8)
+        
+        # Giới hạn strictly toàn bộ phổ chỉ nằm trong biên của mask nhị phân gốc
+        filter_window = filter_window * binary_mask
         
         # 4. Phục dựng pha thô bằng phương pháp dịch chuyển Sub-pixel miền không gian (exp_shift)
         # Tạo lưới tọa độ không gian

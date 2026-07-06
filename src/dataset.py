@@ -283,9 +283,12 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     sideband_mask_centered = np.roll(sideband_mask, shift_y, axis=0)
     sideband_mask_centered = np.roll(sideband_mask_centered, shift_x, axis=1)
     
-    # Làm mịn biên mềm Gaussian (sigma = 8.0) đúng chuẩn MATLAB
-    mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=8.0)
+    # Làm mịn biên mềm Gaussian (sigma = 4.0)
+    mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=4.0)
     mask_centered = mask_centered / (mask_centered.max() + 1e-8)
+    
+    # Ép bộ lọc thô về 0 ở tất cả các vùng nằm ngoài biên của mask nhị phân gốc (Triệt tiêu DC hoàn toàn)
+    mask_centered = mask_centered * sideband_mask_centered
     
     return rx, ry, mask_centered, sideband_mask
 
