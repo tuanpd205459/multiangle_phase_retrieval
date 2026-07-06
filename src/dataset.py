@@ -77,12 +77,14 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
         num_labels, _ = cv2.connectedComponents(bw_open)
         num_objects = num_labels - 1 # Bỏ nhãn nền
         
-        # Chỉ dừng khi các búp phổ đã tách rời (số lượng vùng nằm trong khoảng [2, 4])
-        # Nếu chỉ có 1 vùng (num_objects=1) tức là búp phổ vẫn đang dính chặt vào DC, cần tăng ngưỡng tiếp
-        if 2 <= num_objects <= 4:
+        # Lưu trữ trạng thái có số vùng tốt nhất (ưu tiên 3 vùng, hoặc 2 vùng nếu DC sạch hoàn toàn)
+        if num_objects == 3:
             best_bw = bw_open
             break
+        elif num_objects == 2 and (best_bw is None or num_labels_prev != 3):
+            best_bw = bw_open
             
+        num_labels_prev = num_objects
         T += step
         if T >= 1.0:
             break
@@ -209,11 +211,14 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
         num_labels, _ = cv2.connectedComponents(bw_open)
         num_objects = num_labels - 1
         
-        # Chỉ dừng khi các búp phổ đã tách rời (số lượng vùng nằm trong khoảng [2, 4])
-        # Nếu chỉ có 1 vùng tức là đang bị dính DC, cần tăng ngưỡng để tách ra
-        if 2 <= num_objects <= 4:
+        # Lưu trữ trạng thái có số vùng tốt nhất (ưu tiên 3 vùng, hoặc 2 vùng nếu DC sạch hoàn toàn)
+        if num_objects == 3:
             best_bw = bw_open
             break
+        elif num_objects == 2 and (best_bw is None or num_labels_prev != 3):
+            best_bw = bw_open
+            
+        num_labels_prev = num_objects
         T += step
         if T >= 1.0:
             break
