@@ -31,8 +31,9 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
+    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
     rdc = int(round(min(H, W) * 0.06))
-    dc_mask = (X - cx)**2 + (Y - cy)**2 < rdc**2
+    dc_mask = dist_from_dc < rdc
     spec_no_dc = spec.copy()
     spec_no_dc[dc_mask] = 0.0
     
