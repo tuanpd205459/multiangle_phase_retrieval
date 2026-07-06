@@ -37,8 +37,8 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
     spec_no_dc = spec.copy()
     spec_no_dc[dc_mask] = 0.0
     
-    # Ngưỡng Otsu ban đầu
-    spec_u8 = (spec_no_dc * 255).astype(np.uint8)
+    # 2. Ngưỡng Otsu ban đầu trên phổ log mịn gốc (giữ nguyên vùng DC)
+    spec_u8 = (spec_smooth * 255).astype(np.uint8)
     gtl, _ = cv2.threshold(spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     gtl = gtl / 255.0
     
@@ -46,14 +46,15 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
     step = 0.01 * gtl
     max_iter = 100
     best_bw = None
+    num_labels_prev = 0
     
     # Kernel cho morphology
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)) # strel('disk', 5)
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))   # strel('disk', 2)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     
-    # Vòng lặp tìm ngưỡng tối ưu
+    # Vòng lặp tìm ngưỡng tối ưu cho 3 vùng chính (DC ở tâm, +1 bên phải, -1 bên trái)
     for _ in range(max_iter):
-        bw = (spec_no_dc >= T).astype(np.uint8) * 255
+        bw = (spec_smooth >= T).astype(np.uint8) * 255
         
         # Bwareaopen (xóa vùng diện tích < 30)
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -77,11 +78,12 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
         num_labels, _ = cv2.connectedComponents(bw_open)
         num_objects = num_labels - 1 # Bỏ nhãn nền
         
-        # Lưu trữ trạng thái có số vùng tốt nhất (ưu tiên 3 vùng, hoặc 2 vùng nếu DC sạch hoàn toàn)
+        # Chỉ dừng khi có đúng 3 đối tượng (Bậc 0 ở giữa, bậc +1 ở phải, bậc -1 ở trái)
         if num_objects == 3:
             best_bw = bw_open
             break
         elif num_objects == 2 and (best_bw is None or num_labels_prev != 3):
+            # Fallback nếu +1 và -1 quá mượt dính nhau hoặc DC quá sáng át mất 1 bậc
             best_bw = bw_open
             
         num_labels_prev = num_objects
@@ -98,13 +100,12 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
     
     for cnt in contours_final:
         area = cv2.contourArea(cnt)
-        if area > 40: # Loại bỏ vùng cực nhỏ
+        if area > 40:
             M = cv2.moments(cnt)
             if M["m00"] != 0:
                 c_x = M["m10"] / M["m00"]
                 c_y = M["m01"] / M["m00"]
                 
-                # Tạo mask riêng cho vùng này để tính tổng năng lượng vật lý
                 single_mask = np.zeros_like(best_bw)
                 cv2.drawContours(single_mask, [cnt], -1, 255, -1)
                 energy = float(np.sum(amp[single_mask > 0]))
@@ -116,7 +117,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
                     'contour': cnt
                 })
                 
-    # 3. Tính điểm số (Score = energy * d) và CHỈ CHỌN vùng bên phải (X > cx + 10)
+    # 3. CHỌN vùng bậc +1 ở NỬA BÊN PHẢI (X > cx + 10)
     valid_candidates = []
     for p in props:
         c_x, c_y = p['centroid']
@@ -131,7 +132,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=90, mi
         _, target_prop = max(valid_candidates, key=lambda x: x[0])
         px, py = target_prop['centroid']
     else:
-        # Fallback dự phòng nếu không tìm thấy: dùng annulus tìm đỉnh
+        # Fallback dự phòng nếu không tìm thấy
         search_space = spec_smooth.copy()
         search_space[~((dist_from_dc >= search_radius_min) & (dist_from_dc <= search_radius_max))] = 0
         search_space[X < cx + 12] = 0
@@ -171,17 +172,8 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     spec = (spec - spec.min()) / (spec.max() - spec.min() + 1e-8)
     spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
     
-    # Loại bỏ vùng DC
-    y_coords = np.arange(H)
-    x_coords = np.arange(W)
-    X, Y = np.meshgrid(x_coords, y_coords)
-    rdc = int(round(min(H, W) * 0.06))
-    dc_mask = (X - cx)**2 + (Y - cy)**2 < rdc**2
-    spec_no_dc = spec_smooth.copy()
-    spec_no_dc[dc_mask] = 0.0
-    
-    # Phân ngưỡng Otsu khởi đầu
-    spec_u8 = (spec_no_dc * 255).astype(np.uint8)
+    # 2. Phân ngưỡng Otsu khởi đầu trên phổ log mịn gốc (giữ nguyên vùng DC)
+    spec_u8 = (spec_smooth * 255).astype(np.uint8)
     gtl, _ = cv2.threshold(spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     gtl = gtl / 255.0
     
@@ -189,13 +181,14 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     step = 0.01 * gtl
     max_iter = 100
     best_bw = None
+    num_labels_prev = 0
     
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     
     # Vòng lặp đếm vùng liên thông
     for _ in range(max_iter):
-        bw = (spec_no_dc >= T).astype(np.uint8) * 255
+        bw = (spec_smooth >= T).astype(np.uint8) * 255
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_area = np.zeros_like(bw)
         for cnt in contours:
@@ -211,7 +204,7 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
         num_labels, _ = cv2.connectedComponents(bw_open)
         num_objects = num_labels - 1
         
-        # Lưu trữ trạng thái có số vùng tốt nhất (ưu tiên 3 vùng, hoặc 2 vùng nếu DC sạch hoàn toàn)
+        # Chỉ dừng khi có đúng 3 đối tượng (DC ở giữa, bậc +1 ở phải, bậc -1 ở trái)
         if num_objects == 3:
             best_bw = bw_open
             break
