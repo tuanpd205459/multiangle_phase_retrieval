@@ -295,7 +295,7 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         axes[i, 1].axis('off')
         axes[i, 1].plot(cx, cy, 'g+', markersize=8) # DC center
         axes[i, 1].plot(target_x, target_y, 'rx', markersize=8) # Carrier center
-        if target_prop is not None:
+        if target_contour is not None:
             rect = Rectangle((bx, by), width=bw_w, height=bw_h, color='red', fill=False, linestyle='--', linewidth=1.5)
             axes[i, 1].add_patch(rect)
         axes[i, 1].set_title(f"Fourier + BBox\nk=({k[0]:.2f}, {k[1]:.2f})", fontsize=10)
