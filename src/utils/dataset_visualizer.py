@@ -183,18 +183,22 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         filter_window = ndimage.gaussian_filter(binary_mask, sigma=8.0)
         filter_window = filter_window / (filter_window.max() + 1e-8)
         
-        # 4. Phục dựng pha thô bằng cách DỊCH PHỔ TRỰC TIẾP TRONG MIỀN TẦN SỐ (Fourier-domain shift)
-        # Nhân phổ ban đầu với Gaussian Soft Window của búp phổ
-        I_fft_filtered = I_fft_raw * filter_window
+        # 4. Phục dựng pha thô bằng phương pháp dịch chuyển Sub-pixel miền không gian (exp_shift)
+        # Tạo lưới tọa độ không gian
+        y_grid = np.arange(H)
+        x_grid = np.arange(W)
+        mesh_y, mesh_x = np.meshgrid(y_grid, x_grid, indexing='ij')
         
-        # Dịch tâm của búp phổ về giữa DC bằng np.roll (theo kx, ky)
-        shift_y = int(round(-k[1]))
-        shift_x = int(round(-k[0]))
-        I_fft_centered = np.roll(I_fft_filtered, shift_y, axis=0)
-        I_fft_centered = np.roll(I_fft_centered, shift_x, axis=1)
+        # Nhân pha tuyến tính để dịch chuyển sub-pixel (Fourier Shift Theorem)
+        exp_shift = np.exp(-2j * np.pi * (k[0] * mesh_x / W + k[1] * mesh_y / H))
+        I_shifted = I.astype(np.complex64) * exp_shift
+        I_fft_shifted = np.fft.fftshift(np.fft.fft2(I_shifted))
         
-        # Biến đổi Fourier ngược (IFFT) để khôi phục trường sóng phức giải điều chế và lấy pha
-        U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_centered))
+        # Lọc bằng Gaussian Soft Window đã được dịch tâm
+        I_fft_filtered = I_fft_shifted * mask_centered
+        
+        # Biến đổi Fourier ngược (IFFT) để thu pha giải điều chế thô
+        U_rough = np.fft.ifft2(np.fft.ifftshift(I_fft_filtered))
         phase_rough = np.angle(U_rough)
         
         # --- Cột 1: Hologram gốc ---
@@ -206,6 +210,8 @@ def save_intermediate_steps_preview(dataset, output_path, sample_idx=0, filter_r
         axes[i, 1].imshow(I_fft_raw_log, cmap='viridis', vmin=0, vmax=12)
         axes[i, 1].axis('off')
         axes[i, 1].plot(cx, cy, 'g+', markersize=8) # DC center
+        target_x = cx + k[0]
+        target_y = cy + k[1]
         axes[i, 1].plot(target_x, target_y, 'rx', markersize=8) # Carrier center
         
         # Vẽ đường bao contour của búp phổ đã chọn
