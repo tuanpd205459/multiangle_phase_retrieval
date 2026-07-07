@@ -121,8 +121,8 @@ def evaluate():
             mesh_y, mesh_x = torch.meshgrid(y_grid, x_grid, indexing='ij')
             mesh_x_expanded = mesh_x.view(1, 1, H, W)
             mesh_y_expanded = mesh_y.view(1, 1, H, W)
-            kx1 = k1[:, 0].view(B, 1, 1, 1)
-            ky1 = k1[:, 1].view(B, 1, 1, 1)
+            kx1 = model.k1[0].view(1, 1, 1, 1)
+            ky1 = model.k1[1].view(1, 1, 1, 1)
             phase_carrier1 = 2.0 * np.pi * (kx1 * mesh_x_expanded / W + ky1 * mesh_y_expanded / H)
             R1 = torch.complex(torch.cos(phase_carrier1), torch.sin(phase_carrier1))
             

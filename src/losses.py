@@ -21,8 +21,12 @@ def compute_physics_loss(U_pred, I_real, k, eps=1e-8):
     
     mesh_x_expanded = mesh_x.view(1, 1, H, W)
     mesh_y_expanded = mesh_y.view(1, 1, H, W)
-    kx = k[:, 0].view(B, 1, 1, 1)
-    ky = k[:, 1].view(B, 1, 1, 1)
+    if k.ndim == 1:
+        kx = k[0].expand(B).view(B, 1, 1, 1)
+        ky = k[1].expand(B).view(B, 1, 1, 1)
+    else:
+        kx = k[:, 0].view(B, 1, 1, 1)
+        ky = k[:, 1].view(B, 1, 1, 1)
     
     # R = exp(i * phase_carrier)
     phase_carrier = 2.0 * np.pi * (kx * mesh_x_expanded / W + ky * mesh_y_expanded / H)

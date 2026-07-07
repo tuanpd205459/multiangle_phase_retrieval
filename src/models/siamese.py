@@ -69,14 +69,13 @@ class SiameseTeacherModel(nn.Module):
     def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
         Xử lý song song hai nhánh Siamese cho hai góc chiếu khác nhau.
-        Sử dụng tần số sóng mang k1 và k2 đặc trưng cho từng mẫu (batch-specific)
-        truyền từ ngoài vào để đảm bảo dịch phổ chính xác cho dữ liệu thực nghiệm.
+        Sử dụng tần số sóng mang học được self.k1 và self.k2 để giải điều chế.
         """
-        # Nhánh 1: Góc chiếu thứ nhất sử dụng k1 truyền vào và mask1
-        U1, amp1, phase1 = self.forward_single_branch(I1, k1, mask_override=mask1)
+        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1 và mask1
+        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
         
-        # Nhánh 2: Góc chiếu thứ hai sử dụng k2 truyền vào và mask2
-        U2, amp2, phase2 = self.forward_single_branch(I2, k2, mask_override=mask2)
+        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2 và mask2
+        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
         
         return (U1, amp1, phase1), (U2, amp2, phase2)
 
