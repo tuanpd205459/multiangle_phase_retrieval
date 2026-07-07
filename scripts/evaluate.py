@@ -127,7 +127,7 @@ def evaluate():
             R1 = torch.complex(torch.cos(phase_carrier1), torch.sin(phase_carrier1))
             
             # Tính hologram cường độ dự đoán và chuẩn hóa khớp tỷ lệ trung bình
-            I_pred1 = torch.abs(U1 + R1)**2
+            I_pred1 = torch.abs(U1 * R1 + 1.0)**2
             scale1 = torch.mean(I1, dim=(-2, -1), keepdim=True) / (torch.mean(I_pred1, dim=(-2, -1), keepdim=True) + 1e-8)
             I_pred1_scaled = I_pred1 * scale1
             I_pred1_np = I_pred1_scaled[0, 0].cpu().numpy()

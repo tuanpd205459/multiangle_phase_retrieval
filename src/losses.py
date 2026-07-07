@@ -29,7 +29,7 @@ def compute_physics_loss(U_pred, I_real, k, eps=1e-8):
     R = torch.complex(torch.cos(phase_carrier), torch.sin(phase_carrier))
     
     # 2. Tính hologram cường độ dự đoán
-    I_pred = torch.abs(U_pred + R)**2
+    I_pred = torch.abs(U_pred * R + 1.0)**2
     
     # 3. Khớp tỷ lệ trung bình (Global Scale Matching) thay vì Min-Max Normalization.
     # Tránh hiện tượng bất biến quy mô (scale-invariance) khiến biên độ U bị triệt tiêu về 0 do weight decay.
