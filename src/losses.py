@@ -99,24 +99,31 @@ def compute_total_loss(U1, U2, I1, I2, k1, k2, config):
     # 2. Consistency Loss giữa hai góc
     loss_cons = compute_complex_consistency_loss(U1, U2)
     
-    # 3. Background Sparsity / Smoothness (TV Loss) trên pha khôi phục
+    # 3. Background Sparsity / Smoothness (TV Loss) trên pha và biên độ khôi phục
     phase1 = torch.angle(U1)
     phase2 = torch.angle(U2)
-    loss_tv = compute_total_variation_loss(phase1) + compute_total_variation_loss(phase2)
+    amp1 = torch.abs(U1)
+    amp2 = torch.abs(U2)
+    
+    loss_tv_phase = compute_total_variation_loss(phase1) + compute_total_variation_loss(phase2)
+    loss_tv_amp = compute_total_variation_loss(amp1) + compute_total_variation_loss(amp2)
     
     # Lấy các trọng số từ cấu hình config
     lambda_phys = config['loss'].get('lambda_physics', 1.0)
     lambda_cons = config['loss'].get('lambda_consistency', 0.5)
     lambda_sparsity = config['loss'].get('lambda_sparsity', 0.01)
+    lambda_amp = config['loss'].get('lambda_amp_smooth', 0.1)
     
     total_loss = (lambda_phys * loss_phys + 
                   lambda_cons * loss_cons + 
-                  lambda_sparsity * loss_tv)
+                  lambda_sparsity * loss_tv_phase + 
+                  lambda_amp * loss_tv_amp)
                   
     return total_loss, {
         'loss_phys': loss_phys.item(),
         'loss_cons': loss_cons.item(),
-        'loss_tv': loss_tv.item(),
+        'loss_tv': loss_tv_phase.item(),
+        'loss_tv_amp': loss_tv_amp.item(),
         'total_loss': total_loss.item()
     }
 
