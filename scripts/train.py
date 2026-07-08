@@ -166,7 +166,7 @@ def train():
             optimizer.zero_grad()
             
             # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
-            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+            (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Tính toán hàm Loss sử dụng sóng mang học được (model.k1, model.k2) để đảm bảo đồng bộ
             loss, loss_dict = compute_total_loss(U1, U2, I1, I2, model.k1, model.k2, config)
@@ -205,7 +205,7 @@ def train():
                     mask2 = mask2.to(device)
                 
                 # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
-                (U1, _, _), (U2, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+                (U1, _, _, _), (U2, _, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
                 # Tính toán Loss đánh giá sử dụng sóng mang học được (model.k1, model.k2)
                 _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, model.k1, model.k2, config)

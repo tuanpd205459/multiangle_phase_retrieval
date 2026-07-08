@@ -112,7 +112,7 @@ def evaluate():
                 mask2 = mask2.to(device)
                 
             # Khôi phục trường sóng phức
-            (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+            (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Tính toán Hologram tái tạo (Reconstructed Hologram) để kiểm chứng vật lý
             B, C, H, W = U1.shape
@@ -144,6 +144,8 @@ def evaluate():
                     'hologram2': I2[0, 0].cpu().numpy(),
                     'amplitude1': amp_pred,
                     'phase1': phi_pred,
+                    'phase_rough1': phase_rough1[0, 0].cpu().numpy(),
+                    'phase_rough2': phase_rough2[0, 0].cpu().numpy(),
                     'kx1': k1[0, 0].item(),
                     'ky1': k1[0, 1].item()
                 }
@@ -184,6 +186,8 @@ def evaluate():
                     amp_pred,
                     phi_pred_aligned,
                     phi_gt_wrapped,
+                    phase_rough1[0, 0].cpu().numpy(),
+                    phase_rough2[0, 0].cpu().numpy(),
                     output_dir
                 )
                 
@@ -194,14 +198,14 @@ def evaluate():
         
     print(f"🎨 Đã xuất các hình ảnh trực quan hóa vào thư mục: {output_dir}")
 
-def visualize_sample(sample_idx, I1, I2, I_pred1, amp, phase, phase_gt, output_dir):
+def visualize_sample(sample_idx, I1, I2, I_pred1, amp, phase, phase_gt, phase_rough1, phase_rough2, output_dir):
     """
-    Vẽ bảng so sánh kết quả hiển thị các bản đồ pha wrapped và hologram tái tạo.
+    Vẽ bảng so sánh kết quả hiển thị các bản đồ pha wrapped, hologram tái tạo, và pha trung gian.
     """
-    cols = 5 if phase_gt is not None else 4
+    cols = 6 if phase_gt is not None else 5
     fig, axes = plt.subplots(2, cols, figsize=(cols * 3.8, 7))
     
-    # ---------------- DÒNG 1: KẾT QUẢ KHÔI PHỤC ----------------
+    # ---------------- DÒNG 1: KẾT QUẢ KHÔI PHỤC & TRUNG GIAN ----------------
     # 1. Hologram gốc 1
     axes[0, 0].imshow(I1, cmap='gray')
     axes[0, 0].set_title("Input Hologram 1")
@@ -231,27 +235,39 @@ def visualize_sample(sample_idx, I1, I2, I_pred1, amp, phase, phase_gt, output_d
         axes[0, 4].axis('off')
         fig.colorbar(im_gt, ax=axes[0, 4], fraction=0.046, pad=0.04)
         
+        # 6. Pha trung gian 1 (Rough Phase 1)
+        im_rough1 = axes[0, 5].imshow(phase_rough1, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[0, 5].set_title("Intermediate Phase 1 (Wrapped)")
+        axes[0, 5].axis('off')
+        fig.colorbar(im_rough1, ax=axes[0, 5], fraction=0.046, pad=0.04)
+    else:
+        # 5. Pha trung gian 1 (Rough Phase 1)
+        im_rough1 = axes[0, 4].imshow(phase_rough1, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[0, 4].set_title("Intermediate Phase 1 (Wrapped)")
+        axes[0, 4].axis('off')
+        fig.colorbar(im_rough1, ax=axes[0, 4], fraction=0.046, pad=0.04)
+        
     # ---------------- DÒNG 2: ĐỐI CHỨNG VÀ ĐÁNH GIÁ ----------------
-    # 6. Hologram gốc 2
+    # 7. Hologram gốc 2
     axes[1, 0].imshow(I2, cmap='gray')
     axes[1, 0].set_title("Input Hologram 2")
     axes[1, 0].axis('off')
     
-    # 7. Phổ Fourier của Hologram 1
+    # 8. Phổ Fourier của Hologram 1
     I1_fft = np.log(np.abs(np.fft.fftshift(np.fft.fft2(I1))) + 1e-3)
     axes[1, 1].imshow(I1_fft, cmap='viridis', vmin=0, vmax=12)
     axes[1, 1].set_title("Hologram Fourier Spectrum")
     axes[1, 1].axis('off')
     
     if phase_gt is not None:
-        # 8. Bản đồ lỗi pha quấn
+        # 9. Bản đồ lỗi pha quấn
         error_map = np.abs(np.angle(np.exp(1j * (phase_gt - phase))))
         im_err = axes[1, 2].imshow(error_map, cmap='hot', vmin=0, vmax=np.pi)
         axes[1, 2].set_title("Wrapped Phase Error Map")
         axes[1, 2].axis('off')
         fig.colorbar(im_err, ax=axes[1, 2], fraction=0.046, pad=0.04)
         
-        # 9. Đồ thị Profile cắt ngang của pha quấn
+        # 10. Đồ thị Profile cắt ngang của pha quấn
         mid_row = phase_gt.shape[0] // 2
         axes[1, 3].plot(phase_gt[mid_row, :], 'k-', label='Ground Truth')
         axes[1, 3].plot(phase[mid_row, :], 'r--', label='Reconstructed')
@@ -259,18 +275,30 @@ def visualize_sample(sample_idx, I1, I2, I_pred1, amp, phase, phase_gt, output_d
         axes[1, 3].legend()
         axes[1, 3].grid(True)
         
-        # Tắt trục cuối của dòng 2
+        # Tắt trục cột 4 của dòng 2
         axes[1, 4].axis('off')
+        
+        # 11. Pha trung gian 2 (Rough Phase 2)
+        im_rough2 = axes[1, 5].imshow(phase_rough2, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[1, 5].set_title("Intermediate Phase 2 (Wrapped)")
+        axes[1, 5].axis('off')
+        fig.colorbar(im_rough2, ax=axes[1, 5], fraction=0.046, pad=0.04)
     else:
-        # 8. Đồ thị Profile cắt ngang của pha quấn
+        # 9. Đồ thị Profile cắt ngang của pha quấn
         mid_row = phase.shape[0] // 2
         axes[1, 2].plot(phase[mid_row, :], 'b-', label='Phase Profile')
         axes[1, 2].set_title("Wrapped Phase Mid-line Profile")
         axes[1, 2].legend()
         axes[1, 2].grid(True)
         
-        # Tắt trục cuối của dòng 2
+        # Tắt trục cột 3 của dòng 2
         axes[1, 3].axis('off')
+        
+        # 10. Pha trung gian 2 (Rough Phase 2)
+        im_rough2 = axes[1, 4].imshow(phase_rough2, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[1, 4].set_title("Intermediate Phase 2 (Wrapped)")
+        axes[1, 4].axis('off')
+        fig.colorbar(im_rough2, ax=axes[1, 4], fraction=0.046, pad=0.04)
         
     plt.tight_layout()
     save_path = os.path.join(output_dir, f"visual_evaluation_sample_{sample_idx}.png")

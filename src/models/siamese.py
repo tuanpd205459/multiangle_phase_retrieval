@@ -57,6 +57,9 @@ class SiameseTeacherModel(nn.Module):
         # 1. Giải điều chế khả vi miền Fourier
         U_rough = self.demodulator(I, kx, ky, mask_override=mask_override) # [B, 1, H, W] (phức)
         
+        # Trích xuất pha trung gian thô (vùng chọn phổ bậc +1 sau IFFT)
+        phase_rough = torch.angle(U_rough)
+        
         # 2. Tinh chỉnh bằng mạng U-Net
         U_refined = self.unet(U_rough)        # [B, 1, H, W] (phức)
         
@@ -64,7 +67,7 @@ class SiameseTeacherModel(nn.Module):
         amplitude = torch.abs(U_refined)
         phase = torch.angle(U_refined)
         
-        return U_refined, amplitude, phase
+        return U_refined, amplitude, phase, phase_rough
 
     def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
@@ -72,12 +75,12 @@ class SiameseTeacherModel(nn.Module):
         Sử dụng tần số sóng mang học được self.k1 và self.k2 để giải điều chế.
         """
         # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1 và mask1
-        U1, amp1, phase1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
+        U1, amp1, phase1, phase_rough1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
         
         # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2 và mask2
-        U2, amp2, phase2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
+        U2, amp2, phase2, phase_rough2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
         
-        return (U1, amp1, phase1), (U2, amp2, phase2)
+        return (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2)
 
 if __name__ == "__main__":
     print("⏳ Đang kiểm tra mô hình Siamese với các tham số vật lý học được...")
@@ -91,7 +94,7 @@ if __name__ == "__main__":
     k1_dummy = torch.zeros(2, 2) # Chỉ dùng để giữ cấu trúc tương thích
     k2_dummy = torch.zeros(2, 2)
     
-    (U1, amp1, phase1), (U2, amp2, phase2) = model(I1, k1_dummy, I2, k2_dummy)
+    (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1_dummy, I2, k2_dummy)
     
     # Tính Loss giả lập và lan truyền ngược để kiểm tra gradient
     loss = torch.mean(torch.abs(U1) + torch.abs(U2))

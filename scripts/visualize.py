@@ -40,41 +40,61 @@ def main():
         print("❌ Sai: Không tìm thấy dữ liệu pha trong file .mat")
         return
         
+    phase_rough = data.get('phase_rough1', None)
+    has_rough = phase_rough is not None
     has_gt = 'phase_gt' in data
-    cols = 4 if (has_gt or phase_unwrapped is not None) else 3
     
-    fig, axes = plt.subplots(1, cols, figsize=(16, 4.5))
+    # Tính số cột
+    cols = 3
+    if has_rough:
+        cols += 1
+    if has_gt or phase_unwrapped is not None:
+        cols += 1
+        
+    fig, axes = plt.subplots(1, cols, figsize=(cols * 4, 4.5))
+    
+    current_col = 0
     
     # 1. Vẽ Hologram cường độ thô
-    axes[0].imshow(holo, cmap='gray')
-    axes[0].set_title("Raw Hologram")
-    axes[0].axis('off')
+    axes[current_col].imshow(holo, cmap='gray')
+    axes[current_col].set_title("Raw Hologram")
+    axes[current_col].axis('off')
+    current_col += 1
     
-    # 2. Vẽ Biên độ khôi phục
-    im_amp = axes[1].imshow(amp, cmap='jet')
-    axes[1].set_title("Reconstructed Amplitude")
-    axes[1].axis('off')
-    fig.colorbar(im_amp, ax=axes[1])
+    # 2. Vẽ Pha trung gian (nếu có)
+    if has_rough:
+        im_rough = axes[current_col].imshow(phase_rough, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[current_col].set_title("Intermediate Phase (Wrapped)")
+        axes[current_col].axis('off')
+        fig.colorbar(im_rough, ax=axes[current_col])
+        current_col += 1
+        
+    # 3. Vẽ Biên độ khôi phục
+    im_amp = axes[current_col].imshow(amp, cmap='jet')
+    axes[current_col].set_title("Reconstructed Amplitude")
+    axes[current_col].axis('off')
+    fig.colorbar(im_amp, ax=axes[current_col])
+    current_col += 1
     
-    # 3. Vẽ Pha quấn
-    im_phase_wrap = axes[2].imshow(phase_wrapped, cmap='jet')
-    axes[2].set_title("Reconstructed Wrapped Phase")
-    axes[2].axis('off')
-    fig.colorbar(im_phase_wrap, ax=axes[2])
+    # 4. Vẽ Pha quấn khôi phục
+    im_phase_wrap = axes[current_col].imshow(phase_wrapped, cmap='jet', vmin=-np.pi, vmax=np.pi)
+    axes[current_col].set_title("Reconstructed Wrapped Phase")
+    axes[current_col].axis('off')
+    fig.colorbar(im_phase_wrap, ax=axes[current_col])
+    current_col += 1
     
-    # 4. Vẽ Pha mở (hoặc Ground Truth nếu không có pha mở)
-    if cols == 4:
-        if phase_unwrapped is not None:
-            im_phase_unwrap = axes[3].imshow(phase_unwrapped, cmap='jet')
-            axes[3].set_title("Reconstructed Unwrapped Phase")
-            axes[3].axis('off')
-            fig.colorbar(im_phase_unwrap, ax=axes[3])
-        elif has_gt:
-            phase_gt = data['phase_gt']
-            im_gt = axes[3].imshow(phase_gt, cmap='jet')
-            axes[3].set_title("Ground Truth Phase")
-            axes[3].axis('off')
-            fig.colorbar(im_gt, ax=axes[3])
+    # 5. Vẽ Pha mở (hoặc Ground Truth nếu không có pha mở)
+    if phase_unwrapped is not None:
+        im_phase_unwrap = axes[current_col].imshow(phase_unwrapped, cmap='jet')
+        axes[current_col].set_title("Reconstructed Unwrapped Phase")
+        axes[current_col].axis('off')
+        fig.colorbar(im_phase_unwrap, ax=axes[current_col])
+    elif has_gt:
+        phase_gt = data['phase_gt']
+        im_gt = axes[current_col].imshow(phase_gt, cmap='jet', vmin=-np.pi, vmax=np.pi)
+        axes[current_col].set_title("Ground Truth Phase")
+        axes[current_col].axis('off')
+        fig.colorbar(im_gt, ax=axes[current_col])
         
     plt.tight_layout()
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
