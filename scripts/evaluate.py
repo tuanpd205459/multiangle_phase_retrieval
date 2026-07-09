@@ -121,13 +121,13 @@ def evaluate():
             mesh_y, mesh_x = torch.meshgrid(y_grid, x_grid, indexing='ij')
             mesh_x_expanded = mesh_x.view(1, 1, H, W)
             mesh_y_expanded = mesh_y.view(1, 1, H, W)
-            kx1 = model.k1[0].view(1, 1, 1, 1)
-            ky1 = model.k1[1].view(1, 1, 1, 1)
+            kx1 = k1[0, 0].view(1, 1, 1, 1)
+            ky1 = k1[0, 1].view(1, 1, 1, 1)
             phase_carrier1 = 2.0 * np.pi * (kx1 * mesh_x_expanded / W + ky1 * mesh_y_expanded / H)
             R1 = torch.complex(torch.cos(phase_carrier1), torch.sin(phase_carrier1))
             
             # Tính hologram cường độ dự đoán và chuẩn hóa khớp tỷ lệ trung bình
-            I_pred1 = torch.abs(U1 * R1 + 1.0)**2
+            I_pred1 = torch.abs(U1 + R1)**2
             scale1 = torch.mean(I1, dim=(-2, -1), keepdim=True) / (torch.mean(I_pred1, dim=(-2, -1), keepdim=True) + 1e-8)
             I_pred1_scaled = I_pred1 * scale1
             I_pred1_np = I_pred1_scaled[0, 0].cpu().numpy()

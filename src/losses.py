@@ -33,7 +33,7 @@ def compute_physics_loss(U_pred, I_real, k, eps=1e-8):
     R = torch.complex(torch.cos(phase_carrier), torch.sin(phase_carrier))
     
     # 2. Tính hologram cường độ dự đoán
-    I_pred = torch.abs(U_pred * R + 1.0)**2
+    I_pred = torch.abs(U_pred + R)**2
     
     # 3. Khớp tỷ lệ trung bình (Global Scale Matching) thay vì Min-Max Normalization.
     # Tránh hiện tượng bất biến quy mô (scale-invariance) khiến biên độ U bị triệt tiêu về 0 do weight decay.
@@ -106,24 +106,20 @@ def compute_total_loss(U1, U2, I1, I2, k1, k2, config):
     amp2 = torch.abs(U2)
     
     loss_tv_phase = compute_total_variation_loss(phase1) + compute_total_variation_loss(phase2)
-    loss_tv_amp = compute_total_variation_loss(amp1) + compute_total_variation_loss(amp2)
     
     # Lấy các trọng số từ cấu hình config
     lambda_phys = config['loss'].get('lambda_physics', 1.0)
     lambda_cons = config['loss'].get('lambda_consistency', 0.5)
     lambda_sparsity = config['loss'].get('lambda_sparsity', 0.01)
-    lambda_amp = config['loss'].get('lambda_amp_smooth', 0.1)
     
     total_loss = (lambda_phys * loss_phys + 
                   lambda_cons * loss_cons + 
-                  lambda_sparsity * loss_tv_phase + 
-                  lambda_amp * loss_tv_amp)
+                  lambda_sparsity * loss_tv_phase)
                   
     return total_loss, {
         'loss_phys': loss_phys.item(),
         'loss_cons': loss_cons.item(),
         'loss_tv': loss_tv_phase.item(),
-        'loss_tv_amp': loss_tv_amp.item(),
         'total_loss': total_loss.item()
     }
 

@@ -168,8 +168,8 @@ def train():
             # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
             (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
-            # Tính toán hàm Loss sử dụng sóng mang học được (model.k1, model.k2) để đảm bảo đồng bộ
-            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, model.k1, model.k2, config)
+            # Tính toán hàm Loss sử dụng sóng mang per-sample từ dataset
+            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
             
             # Lan truyền ngược và tối ưu hóa
             loss.backward()
@@ -207,8 +207,8 @@ def train():
                 # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
                 (U1, _, _, _), (U2, _, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
-                # Tính toán Loss đánh giá sử dụng sóng mang học được (model.k1, model.k2)
-                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, model.k1, model.k2, config)
+                # Tính toán Loss đánh giá sử dụng sóng mang per-sample từ dataset
+                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
                 val_loss_accum += val_loss_dict['total_loss']
                 
         avg_val_loss = val_loss_accum / len(val_loader)
@@ -223,15 +223,13 @@ def train():
             
         # In thông tin tiến trình huấn luyện và các tham số học được
         with torch.no_grad():
-            k1_print = model.k1.cpu().numpy()
-            k2_print = model.k2.cpu().numpy()
             rx_print = model.demodulator.filter_radius_x.item()
             ry_print = model.demodulator.filter_radius_y.item()
             
         print(f"Epoch [{epoch+1}/{epochs}] - "
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
               f"Val Loss: {avg_val_loss:.4f}\n"
-              f"   📎 Tham số học được: k1=[{k1_print[0]:.3f}, {k1_print[1]:.3f}] | k2=[{k2_print[0]:.3f}, {k2_print[1]:.3f}] | Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
+              f"   📎 Tham số học được: Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
               
         # 7. Lưu trữ Checkpoint
         checkpoint_data = {

@@ -26,7 +26,6 @@ loss:
   lambda_physics: 1.0        # Trọng số của Differentiable Physics Loss
   lambda_consistency: 0.5    # Trọng số của Complex Consistency Loss giữa các góc
   lambda_sparsity: 0.01      # Trọng số của Sparsity Loss cho pha vùng nền (background)
-  lambda_amp_smooth: 0.1     # Trọng số của TV Loss cho biên độ (khóa biên độ phẳng)
 
 # Cấu hình Đường dẫn Hệ thống
 paths:

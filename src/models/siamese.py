@@ -31,9 +31,7 @@ class SiameseTeacherModel(nn.Module):
         # 1. Module giải điều chế khả vi (chứa nn.Parameter filter_radius_x và filter_radius_y bên trong)
         self.demodulator = DifferentiableDemodulator(filter_radius_x=filter_radius_x, filter_radius_y=filter_radius_y)
         
-        # 2. Tần số sóng mang là nn.Parameter để có thể tối ưu hóa/học được
-        self.k1 = nn.Parameter(torch.tensor(k1_init, dtype=torch.float32))
-        self.k2 = nn.Parameter(torch.tensor(k2_init, dtype=torch.float32))
+        # 2. Tần số sóng mang giờ đây lấy trực tiếp từ dữ liệu per-sample (không dùng toàn cục)
         
         # 3. Mạng U-Net chung trọng số (Shared Weights)
         self.unet = PhaseRefiningUNet()
@@ -72,13 +70,13 @@ class SiameseTeacherModel(nn.Module):
     def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
         Xử lý song song hai nhánh Siamese cho hai góc chiếu khác nhau.
-        Sử dụng tần số sóng mang học được self.k1 và self.k2 để giải điều chế.
+        Sử dụng trực tiếp sóng mang k1, k2 riêng biệt của từng mẫu ảnh.
         """
-        # Nhánh 1: Góc chiếu thứ nhất sử dụng self.k1 và mask1
-        U1, amp1, phase1, phase_rough1 = self.forward_single_branch(I1, self.k1, mask_override=mask1)
+        # Nhánh 1: Góc chiếu thứ nhất sử dụng k1 per-sample và mask1
+        U1, amp1, phase1, phase_rough1 = self.forward_single_branch(I1, k1, mask_override=mask1)
         
-        # Nhánh 2: Góc chiếu thứ hai sử dụng self.k2 và mask2
-        U2, amp2, phase2, phase_rough2 = self.forward_single_branch(I2, self.k2, mask_override=mask2)
+        # Nhánh 2: Góc chiếu thứ hai sử dụng k2 per-sample và mask2
+        U2, amp2, phase2, phase_rough2 = self.forward_single_branch(I2, k2, mask_override=mask2)
         
         return (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2)
 
@@ -104,8 +102,6 @@ if __name__ == "__main__":
     print(f"U1 shape: {U1.shape}, dtype: {U1.dtype}")
     print(f"U2 shape: {U2.shape}, dtype: {U2.dtype}")
     print("\n📊 Kiểm tra tính toán Gradient trên các tham số vật lý học được:")
-    print(f"   - k1 value: {model.k1.detach().numpy()}, grad: {model.k1.grad.numpy()}")
-    print(f"   - k2 value: {model.k2.detach().numpy()}, grad: {model.k2.grad.numpy()}")
     print(f"   - filter_radius_x value: {model.demodulator.filter_radius_x.item():.2f}, grad: {model.demodulator.filter_radius_x.grad.item():.6f}")
     print(f"   - filter_radius_y value: {model.demodulator.filter_radius_y.item():.2f}, grad: {model.demodulator.filter_radius_y.grad.item():.6f}")
 
