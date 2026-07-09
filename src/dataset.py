@@ -11,99 +11,119 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
     Thuật toán nhận diện vùng tự động trên miền Fourier theo bài báo:
     'Automated Fourier space region-recognition filtering for off-axis digital holographic microscopy'
     
-    Quy trình:
-      1. Tính phổ biên độ và chuẩn hóa.
-      2. Tính ngưỡng Otsu khởi đầu (Global Threshold Level - GTL).
-      3. Tăng dần ngưỡng thêm 1% GTL cho đến khi số lượng vùng liên thông (lọc nhiễu) bằng đúng 3
-         (gồm: búp DC ở tâm, búp +1 bên phải, búp -1 bên trái).
-      4. Phân loại và trích xuất Centroid (sóng mang) và Bounding Box (bán kính lọc) của búp +1.
+    Quy trình (đúng 100% theo paper):
+      (1) Apply GTL (Otsu) to intensity of FFT hologram → binary image → regionprops.
+      (2) Increase threshold by 1% of GTL, repeat until number of regions == 3.
+      (3) Use box boundary data to get the right frequency component boundary as filtering window.
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
     cx, cy = W // 2, H // 2
     
-    # 1. Biến đổi Fourier và tính biên độ
+    # 1. Biến đổi Fourier và tính biên độ (RAW amplitude, KHÔNG dùng log)
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
     
-    # Sử dụng log-amplitude để nén dải động và phân ngưỡng ổn định
-    spec = np.log1p(amp)
-    spec_norm = (spec - spec.min()) / (spec.max() - spec.min() + 1e-8)
-    spec_smooth = ndimage.gaussian_filter(spec_norm, sigma=2.0)
+    # 2. Tính ngưỡng Otsu khởi đầu (GTL) trên RAW amplitude
+    #    graythresh trong MATLAB hoạt động trên dữ liệu float trực tiếp.
+    #    Ở đây ta tự implement Otsu trên float để tránh mất thông tin do uint8.
+    amp_flat = amp.ravel()
+    nbins = 256
+    hist, bin_edges = np.histogram(amp_flat, bins=nbins)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     
-    # 2. Tính ngưỡng Otsu khởi đầu (graythresh trong MATLAB)
-    spec_smooth_u8 = (spec_smooth * 255).astype(np.uint8)
-    gtl, _ = cv2.threshold(spec_smooth_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    gtl = gtl / 255.0
+    total = hist.sum()
+    sum_total = np.sum(bin_centers * hist)
+    sum_bg = 0.0
+    weight_bg = 0
+    max_variance = 0.0
+    best_threshold = bin_centers[0]
+    
+    for i in range(nbins):
+        weight_bg += hist[i]
+        if weight_bg == 0:
+            continue
+        weight_fg = total - weight_bg
+        if weight_fg == 0:
+            break
+        sum_bg += bin_centers[i] * hist[i]
+        mean_bg = sum_bg / weight_bg
+        mean_fg = (sum_total - sum_bg) / weight_fg
+        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+        if variance > max_variance:
+            max_variance = variance
+            best_threshold = bin_centers[i]
+    
+    gtl = best_threshold
     
     T = gtl
     step = 0.01 * gtl
-    max_iter = 100
+    max_iter = 200
     best_components = None
     num_labels_prev = 0
     
-    # Kernel phục vụ bộ lọc morphology làm mịn biên vùng nhị phân
+    # Kernel morphology
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     
-    # 3. Vòng lặp tăng ngưỡng 1% cho đến khi số vùng bằng 3
+    # 3. Vòng lặp tăng ngưỡng 1% GTL cho đến khi số vùng bằng 3
     for _ in range(max_iter):
-        bw = (spec_smooth >= T).astype(np.uint8) * 255
+        # Phân ngưỡng trực tiếp trên RAW amplitude (đúng theo paper)
+        bw = (amp > T).astype(np.uint8) * 255
         
-        # Lọc bỏ nhiễu nhỏ có diện tích < min_area (bwareaopen trong MATLAB)
+        # bwareaopen: Lọc bỏ vùng có diện tích < min_area
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_area = np.zeros_like(bw)
         for cnt in contours:
             if cv2.contourArea(cnt) > min_area:
                 cv2.drawContours(bw_area, [cnt], -1, 255, -1)
                 
-        # Morphology Close để lấp lỗ và gom mảnh
+        # Morphology Close (strel 'disk' 5)
         bw_close = cv2.morphologyEx(bw_area, cv2.MORPH_CLOSE, kernel_close)
         
-        # Imfill (điền lỗ trống bên trong)
+        # Imfill
         contours_fill, _ = cv2.findContours(bw_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_filled = np.zeros_like(bw_close)
         cv2.drawContours(bw_filled, contours_fill, -1, 255, -1)
         
-        # Morphology Open để làm mịn biên ngoài
+        # Morphology Open (strel 'disk' 2)
         bw_open = cv2.morphologyEx(bw_filled, cv2.MORPH_OPEN, kernel_open)
         
-        # regionprops tương đương trong OpenCV
+        # regionprops: connectedComponentsWithStats
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_open)
         
-        # Trích xuất thông tin các vùng hợp lệ (bỏ nhãn nền 0)
         components = []
         for label_idx in range(1, num_labels):
             area = stats[label_idx, cv2.CC_STAT_AREA]
             if area >= min_area:
                 components.append({
-                    'centroid': centroids[label_idx],
+                    'centroid': centroids[label_idx].copy(),  # copy để tránh reference
                     'bbox': (stats[label_idx, cv2.CC_STAT_LEFT],
                              stats[label_idx, cv2.CC_STAT_TOP],
                              stats[label_idx, cv2.CC_STAT_WIDTH],
                              stats[label_idx, cv2.CC_STAT_HEIGHT]),
-                    'area': area
+                    'area': int(area)
                 })
                 
-        # Điều kiện dừng: tìm thấy đúng 3 vùng chính (DC ở tâm, búp +1 ở phải, búp -1 ở trái)
+        # Điều kiện dừng: đúng 3 vùng (DC, +1, -1)
         if len(components) == 3:
             best_components = components
             break
         elif len(components) == 2 and (best_components is None or num_labels_prev != 3):
-            # Fallback nếu một búp quá mờ bị mất trước
+            best_components = components
+        elif len(components) == 1 and best_components is None:
             best_components = components
             
         num_labels_prev = len(components)
         T += step
-        if T >= 1.0:
+        if T >= amp.max():
             break
             
     if best_components is None:
         best_components = components if len(components) > 0 else []
         
-    # Phân loại và định vị búp +1
+    # 4. Phân loại: DC là vùng gần tâm hình học nhất
     if len(best_components) > 0:
-        # Vùng DC là vùng gần tâm DC hình học nhất
         dc_comp = min(best_components, key=lambda c: (c['centroid'][0] - cx)**2 + (c['centroid'][1] - cy)**2)
         sidebands = [c for c in best_components if c is not dc_comp]
     else:
@@ -115,6 +135,7 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         if len(right_sidebands) > 0:
             target_comp = max(right_sidebands, key=lambda c: c['area'])
         else:
+            # Nếu không có vùng bên phải, chọn vùng có x lớn nhất (gần bên phải nhất)
             target_comp = max(sidebands, key=lambda c: c['centroid'][0])
             
         px, py = target_comp['centroid']
@@ -122,11 +143,22 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         rx = w / 2.0 + margin
         ry = h / 2.0 + margin
     else:
-        # Fallback mặc định nếu không tìm thấy búp nào
-        px, py = cx + 35.0, cy - 20.0
-        rx, ry = 25.0, 25.0
+        # Fallback: nếu chỉ tìm được 1 vùng (DC), dùng peak search trên raw amp
+        search_amp = amp.copy()
+        # Xóa vùng DC
+        y_coords = np.arange(H)
+        x_coords = np.arange(W)
+        X_grid, Y_grid = np.meshgrid(x_coords, y_coords)
+        dist_from_dc = np.sqrt((X_grid - cx)**2 + (Y_grid - cy)**2)
+        search_amp[dist_from_dc < 15] = 0
+        # Chỉ tìm ở nửa bên phải
+        search_amp[:, :cx] = 0
+        max_idx = np.argmax(search_amp)
+        py_peak, px_peak = np.unravel_index(max_idx, search_amp.shape)
+        px, py = float(px_peak), float(py_peak)
+        rx, ry = 20.0, 20.0
         
-    # Tinh chỉnh sub-pixel bằng trọng tâm cường độ (weighted centroid) vùng lân cận búp +1
+    # Tinh chỉnh sub-pixel bằng weighted centroid
     y_coords = np.arange(H)
     x_coords = np.arange(W)
     X, Y = np.meshgrid(x_coords, y_coords)
@@ -137,11 +169,11 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
     total_weight = np.sum(weights)
     
     if total_weight > 0:
-        ky = float(np.sum(Y[local_mask] * weights) / total_weight - cy)
         kx = float(np.sum(X[local_mask] * weights) / total_weight - cx)
+        ky = float(np.sum(Y[local_mask] * weights) / total_weight - cy)
     else:
-        kx = px - cx
-        ky = py - cy
+        kx = float(px - cx)
+        ky = float(py - cy)
         
     return kx, ky, rx, ry
 
@@ -157,6 +189,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=120, m
 def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margin=5.0):
     """
     Ước lượng kích thước bộ lọc thích nghi dựa trên thuật toán bài báo.
+    Sử dụng box boundary data từ regionprops + Gaussian smoothing biên.
     """
     import scipy.ndimage as ndimage
     H, W = I.shape
@@ -177,21 +210,23 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     else:
         ry = max(ry_est, min_ry)
         
-    # 3. Tạo trực tiếp mặt nạ elip đặt tại tâm (cx, cy)
-    sideband_mask_centered = np.zeros((H, W), dtype=np.float32)
-    cv2.ellipse(sideband_mask_centered, (int(cx), int(cy)), (int(rx), int(ry)), 0.0, 0.0, 360.0, 1.0, -1)
+    # Tạo mặt nạ hình chữ nhật tại tâm (đúng theo paper: box boundary as filtering window)
+    # rồi áp dụng Gaussian smoothing biên
+    mask = np.zeros((H, W), dtype=np.float32)
+    x1 = max(0, int(cx - rx))
+    x2 = min(W, int(cx + rx))
+    y1 = max(0, int(cy - ry))
+    y2 = min(H, int(cy + ry))
+    mask[y1:y2, x1:x2] = 1.0
     
-    # 4. Làm mịn biên mềm Gaussian (sigma = 4.0)
-    mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=4.0)
+    # Gaussian smoothing biên cửa sổ lọc (đúng theo paper)
+    mask_centered = ndimage.gaussian_filter(mask, sigma=2.0)
     mask_centered = mask_centered / (mask_centered.max() + 1e-8)
     
-    # Ép bộ lọc thô về 0 ở tất cả các vùng nằm ngoài biên của mask nhị phân gốc
-    mask_centered = mask_centered * sideband_mask_centered
-    
-    # Tạo sideband_mask chưa dịch (bằng cách dịch mask_centered ngược lại vị trí k) để vẽ contour đối chứng
+    # Tạo sideband_mask để vẽ contour đối chứng trên phổ
     shift_back_x = int(round(kx))
     shift_back_y = int(round(ky))
-    sideband_mask = np.roll(sideband_mask_centered, shift_back_y, axis=0)
+    sideband_mask = np.roll(mask, shift_back_y, axis=0)
     sideband_mask = np.roll(sideband_mask, shift_back_x, axis=1)
     
     return rx, ry, mask_centered, sideband_mask
