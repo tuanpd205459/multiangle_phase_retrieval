@@ -129,7 +129,7 @@ def estimate_carrier_frequency(I, search_radius_min=28, search_radius_max=120, m
             d = np.sqrt((c_x - cx)**2 + (c_y - cy)**2)
             # Ràng buộc khoảng cách nằm trong tầm hoạt động thực tế
             if d >= search_radius_min and d <= search_radius_max:
-                score = p['energy'] * d
+                score = p['energy']
                 valid_candidates.append((score, p))
                 
     if len(valid_candidates) > 0:
@@ -188,9 +188,9 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     spec_smooth_no_dc = spec_smooth.copy()
     spec_smooth_no_dc[dc_mask] = 0.0
     
-    # 2. Phân ngưỡng Otsu khởi đầu trên phổ log mịn đã xóa DC
-    spec_u8 = (spec_smooth_no_dc * 255).astype(np.uint8)
-    gtl, _ = cv2.threshold(spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # 2. Phân ngưỡng Otsu khởi đầu trên phổ log mịn gốc (chứa DC) để lấy ngưỡng gtl cao và chuẩn xác
+    spec_smooth_u8 = (spec_smooth * 255).astype(np.uint8)
+    gtl, _ = cv2.threshold(spec_smooth_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     gtl = gtl / 255.0
     
     T = gtl
@@ -255,19 +255,28 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
                 best_dist = dist
                 target_contour = cnt
                 
-    # Tạo mặt nạ nhị phân của búp phổ dựa trên Convex Hull
-    sideband_mask = np.zeros((H, W), dtype=np.float32)
+    # 1. Xác định kích thước rx, ry từ contour
+    is_valid_contour = False
     if target_contour is not None:
+        M = cv2.moments(target_contour)
+        if M["m00"] != 0:
+            c_x = M["m10"] / M["m00"]
+            c_y = M["m01"] / M["m00"]
+            # Kiểm tra xem contour tìm được có thực sự nằm gần sóng mang ước lượng không
+            dist_to_carrier = np.sqrt((c_x - target_x)**2 + (c_y - target_y)**2)
+            if dist_to_carrier < 15.0: # Giới hạn khoảng cách 15 pixel để tránh lấy nhầm búp nhiễu
+                is_valid_contour = True
+                
+    if is_valid_contour:
         hull = cv2.convexHull(target_contour)
-        cv2.drawContours(sideband_mask, [hull], -1, 1.0, -1)
         bx, by, bw_w, bw_h = cv2.boundingRect(hull)
         rx_est = float(bw_w) / 2.0 + margin
         ry_est = float(bw_h) / 2.0 + margin
     else:
+        # Nếu contour không hợp lệ hoặc quá xa sóng mang, dùng bán kính mặc định an toàn
         rx_est, ry_est = min_rx, min_ry
-        cv2.circle(sideband_mask, (int(target_x), int(target_y)), int(min_rx), 1.0, -1)
         
-    # Ràng buộc an toàn tránh đè lên DC
+    # 2. Ràng buộc an toàn tránh đè lên DC
     dc_gap_x = 12.0
     max_rx_safe = max(abs(kx) - dc_gap_x, min_rx)
     rx = min(max(rx_est, min_rx), max_rx_safe)
@@ -279,18 +288,22 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     else:
         ry = max(ry_est, min_ry)
         
-    # Dịch chuyển mặt nạ về tâm DC (roll theo -kx, -ky)
-    shift_x = int(round(-kx))
-    shift_y = int(round(-ky))
-    sideband_mask_centered = np.roll(sideband_mask, shift_y, axis=0)
-    sideband_mask_centered = np.roll(sideband_mask_centered, shift_x, axis=1)
+    # 3. Tạo trực tiếp mặt nạ elip đặt tại tâm (cx, cy)
+    sideband_mask_centered = np.zeros((H, W), dtype=np.float32)
+    cv2.ellipse(sideband_mask_centered, (int(cx), int(cy)), (int(rx), int(ry)), 0.0, 0.0, 360.0, 1.0, -1)
     
-    # Làm mịn biên mềm Gaussian (sigma = 4.0)
+    # 4. Làm mịn biên mềm Gaussian (sigma = 4.0)
     mask_centered = ndimage.gaussian_filter(sideband_mask_centered, sigma=4.0)
     mask_centered = mask_centered / (mask_centered.max() + 1e-8)
     
-    # Ép bộ lọc thô về 0 ở tất cả các vùng nằm ngoài biên của mask nhị phân gốc (Triệt tiêu DC hoàn toàn)
+    # Ép bộ lọc thô về 0 ở tất cả các vùng nằm ngoài biên của mask nhị phân gốc
     mask_centered = mask_centered * sideband_mask_centered
+    
+    # Tạo sideband_mask chưa dịch (bằng cách dịch mask_centered ngược lại vị trí k) để vẽ contour đối chứng
+    shift_back_x = int(round(kx))
+    shift_back_y = int(round(ky))
+    sideband_mask = np.roll(sideband_mask_centered, shift_back_y, axis=0)
+    sideband_mask = np.roll(sideband_mask, shift_back_x, axis=1)
     
     return rx, ry, mask_centered, sideband_mask
 
