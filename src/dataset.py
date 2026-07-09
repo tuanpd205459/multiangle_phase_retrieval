@@ -105,7 +105,7 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
     if len(best_components) > 0:
         # Vùng DC là vùng gần tâm DC hình học nhất
         dc_comp = min(best_components, key=lambda c: (c['centroid'][0] - cx)**2 + (c['centroid'][1] - cy)**2)
-        sidebands = [c for c in best_components if c != dc_comp]
+        sidebands = [c for c in best_components if c is not dc_comp]
     else:
         sidebands = []
         
