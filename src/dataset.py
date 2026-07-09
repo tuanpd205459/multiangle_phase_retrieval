@@ -170,14 +170,26 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     H, W = I.shape
     cx, cy = W // 2, H // 2
     
+    # 1. Lưới tọa độ và mặt nạ DC (Tạo trước để loại bỏ DC sớm)
+    y_coords = np.arange(H)
+    x_coords = np.arange(W)
+    X, Y = np.meshgrid(x_coords, y_coords)
+    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    rdc = int(round(min(H, W) * 0.07))
+    dc_mask = dist_from_dc < rdc
+    
     I_fft = np.fft.fftshift(np.fft.fft2(I))
     amp = np.abs(I_fft)
     spec = np.log1p(amp)
     spec = (spec - spec.min()) / (spec.max() - spec.min() + 1e-8)
     spec_smooth = ndimage.gaussian_filter(spec, sigma=2.0)
     
-    # 2. Phân ngưỡng Otsu khởi đầu trên phổ log mịn gốc (giữ nguyên vùng DC)
-    spec_u8 = (spec_smooth * 255).astype(np.uint8)
+    # Loại bỏ vùng DC trên phổ mịn trước khi phân ngưỡng để tránh bị dính với búp +1
+    spec_smooth_no_dc = spec_smooth.copy()
+    spec_smooth_no_dc[dc_mask] = 0.0
+    
+    # 2. Phân ngưỡng Otsu khởi đầu trên phổ log mịn đã xóa DC
+    spec_u8 = (spec_smooth_no_dc * 255).astype(np.uint8)
     gtl, _ = cv2.threshold(spec_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     gtl = gtl / 255.0
     
@@ -192,7 +204,7 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
     
     # Vòng lặp đếm vùng liên thông
     for _ in range(max_iter):
-        bw = (spec_smooth >= T).astype(np.uint8) * 255
+        bw = (spec_smooth_no_dc >= T).astype(np.uint8) * 255
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_area = np.zeros_like(bw)
         for cnt in contours:
@@ -208,32 +220,22 @@ def estimate_filter_size(I, kx, ky, min_area=30, min_rx=15.0, min_ry=15.0, margi
         num_labels, _ = cv2.connectedComponents(bw_open)
         num_objects = num_labels - 1
         
-        # Chỉ dừng khi có đúng 3 đối tượng (DC ở giữa, bậc +1 ở phải, bậc -1 ở trái)
-        if num_objects == 3:
+        # Vì đã loại bỏ DC, chúng ta mong đợi có đúng 2 đối tượng chính (búp +1 và búp -1)
+        if num_objects == 2:
             best_bw = bw_open
             break
-        elif num_objects == 2 and (best_bw is None or num_labels_prev != 3):
+        elif num_objects == 1 and (best_bw is None or num_labels_prev != 2):
             best_bw = bw_open
             
         num_labels_prev = num_objects
         T += step
         if T >= 1.0:
             break
-            
-    # Lưới tọa độ và mặt nạ DC
-    y_coords = np.arange(H)
-    x_coords = np.arange(W)
-    X, Y = np.meshgrid(x_coords, y_coords)
-    dist_from_dc = np.sqrt((X - cx)**2 + (Y - cy)**2)
-    rdc = int(round(min(H, W) * 0.06))
-    dc_mask = dist_from_dc < rdc
 
     if best_bw is None:
         best_bw = bw_open
         
-    # Loại bỏ vùng bậc 0 (DC) bằng mặt nạ hình tròn trước khi định vị búp phổ
     best_bw_no_dc = best_bw.copy()
-    best_bw_no_dc[dc_mask] = 0
     
     # Tính Bounding Box dựa trên Convex Hull của vùng gần kx, ky nhất (sau khi xóa DC)
     contours_final, _ = cv2.findContours(best_bw_no_dc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
