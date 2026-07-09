@@ -61,49 +61,46 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
     max_iter = 200
     best_components = None
     num_labels_prev = 0
+    step1_binary = None  # Lưu ảnh nhị phân bước 1 (tại ngưỡng GTL)
     
     # Kernel morphology
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     
-    # 3. Vòng lặp tăng ngưỡng 1% GTL cho đến khi số vùng bằng 3
-    for _ in range(max_iter):
-        # Phân ngưỡng trực tiếp trên RAW amplitude (đúng theo paper)
-        bw = (amp > T).astype(np.uint8) * 255
-        
-        # bwareaopen: Lọc bỏ vùng có diện tích < min_area
+    # Hàm nội bộ: phân ngưỡng + morphology + regionprops
+    def _threshold_and_regionprops(threshold):
+        bw = (amp > threshold).astype(np.uint8) * 255
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_area = np.zeros_like(bw)
         for cnt in contours:
             if cv2.contourArea(cnt) > min_area:
                 cv2.drawContours(bw_area, [cnt], -1, 255, -1)
-                
-        # Morphology Close (strel 'disk' 5)
         bw_close = cv2.morphologyEx(bw_area, cv2.MORPH_CLOSE, kernel_close)
-        
-        # Imfill
         contours_fill, _ = cv2.findContours(bw_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         bw_filled = np.zeros_like(bw_close)
         cv2.drawContours(bw_filled, contours_fill, -1, 255, -1)
-        
-        # Morphology Open (strel 'disk' 2)
         bw_open = cv2.morphologyEx(bw_filled, cv2.MORPH_OPEN, kernel_open)
-        
-        # regionprops: connectedComponentsWithStats
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bw_open)
-        
-        components = []
+        comps = []
         for label_idx in range(1, num_labels):
             area = stats[label_idx, cv2.CC_STAT_AREA]
             if area >= min_area:
-                components.append({
-                    'centroid': centroids[label_idx].copy(),  # copy để tránh reference
+                comps.append({
+                    'centroid': centroids[label_idx].copy(),
                     'bbox': (stats[label_idx, cv2.CC_STAT_LEFT],
                              stats[label_idx, cv2.CC_STAT_TOP],
                              stats[label_idx, cv2.CC_STAT_WIDTH],
                              stats[label_idx, cv2.CC_STAT_HEIGHT]),
                     'area': int(area)
                 })
+        return bw_open, comps
+    
+    # BƯỚC 1: Ảnh nhị phân tại ngưỡng GTL ban đầu (lưu lại cho bước 3)
+    step1_binary, step1_components = _threshold_and_regionprops(gtl)
+    
+    # BƯỚC 2: Tăng ngưỡng 1% GTL cho đến khi số vùng bằng 3
+    for _ in range(max_iter):
+        _, components = _threshold_and_regionprops(T)
                 
         # Điều kiện dừng: đúng 3 vùng (DC, +1, -1)
         if len(components) == 3:
@@ -122,7 +119,7 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
     if best_components is None:
         best_components = components if len(components) > 0 else []
         
-    # 4. Phân loại: DC là vùng gần tâm hình học nhất
+    # Phân loại từ bước 2: DC là vùng gần tâm hình học nhất
     if len(best_components) > 0:
         dc_comp = min(best_components, key=lambda c: (c['centroid'][0] - cx)**2 + (c['centroid'][1] - cy)**2)
         sidebands = [c for c in best_components if c is not dc_comp]
@@ -135,11 +132,28 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         if len(right_sidebands) > 0:
             target_comp = max(right_sidebands, key=lambda c: c['area'])
         else:
-            # Nếu không có vùng bên phải, chọn vùng có x lớn nhất (gần bên phải nhất)
             target_comp = max(sidebands, key=lambda c: c['centroid'][0])
-            
-        px, py = target_comp['centroid']
-        left, top, w, h = target_comp['bbox']
+        
+        # Centroid búp +1 từ bước 2 (dùng để định vị)
+        target_cx, target_cy = target_comp['centroid']
+        
+        # BƯỚC 3: Quay lại ảnh nhị phân bước 1 → tìm vùng chứa centroid búp +1
+        #          → lấy bounding box LỚN từ bước 1 (đúng theo paper)
+        best_step1_dist = float('inf')
+        best_step1_comp = None
+        for c in step1_components:
+            d = np.sqrt((c['centroid'][0] - target_cx)**2 + (c['centroid'][1] - target_cy)**2)
+            if d < best_step1_dist:
+                best_step1_dist = d
+                best_step1_comp = c
+        
+        if best_step1_comp is not None:
+            left, top, w, h = best_step1_comp['bbox']
+            px, py = best_step1_comp['centroid']
+        else:
+            left, top, w, h = target_comp['bbox']
+            px, py = target_cx, target_cy
+        
         rx = w / 2.0 + margin
         ry = h / 2.0 + margin
     else:
