@@ -48,6 +48,11 @@ class PhaseRefiningUNet(nn.Module):
 
         # Lớp tích chập đầu ra để đưa về 2 kênh (Real và Imag)
         self.outc = nn.Conv2d(32, out_channels, kernel_size=1)
+        
+        # Khởi tạo trọng số và bias của lớp cuối cùng bằng 0
+        # Đảm bảo ban đầu U_refined = U_rough (chưa có nhiễu từ mạng)
+        nn.init.zeros_(self.outc.weight)
+        nn.init.zeros_(self.outc.bias)
 
     def forward(self, U_rough):
         """
