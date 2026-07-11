@@ -148,7 +148,20 @@ def train():
         
     # 5. Vòng lặp huấn luyện chính
     epochs = config['train']['epochs']
+    base_lambda_cons = config['loss'].get('lambda_consistency', 0.5)
+    warmup_epochs = 20 # Số epoch dùng để warm-up
+    
     for epoch in range(start_epoch, epochs):
+        # --- LOSS WARM-UP (Ngăn chặn U-Net sập pha) ---
+        # Ở các epoch đầu, lambda_consistency nhỏ để Physics Loss chiếm ưu thế.
+        # U-Net buộc phải học cách giữ lại pha vật thể trước khi bị ép đồng bộ.
+        if epoch < warmup_epochs:
+            current_lambda_cons = base_lambda_cons * (epoch / warmup_epochs)
+        else:
+            current_lambda_cons = base_lambda_cons
+        config['loss']['lambda_consistency'] = current_lambda_cons
+        # ----------------------------------------------
+        
         model.train()
         train_loss_accum = 0.0
         train_loss_phys = 0.0
@@ -176,8 +189,8 @@ def train():
             (U1, amp1, phase1, phase_rough1, k1_final, delta_k1), \
             (U2, amp2, phase2, phase_rough2, k2_final, delta_k2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
-            # Tính toán hàm Loss sử dụng sóng mang per-sample từ dataset
-            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
+            # Tính toán hàm Loss sử dụng sóng mang k1_final, k2_final đã được bù (FIX BUG)
+            loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1_final, k2_final, config)
             
             # Lan truyền ngược và tối ưu hóa
             loss.backward()
@@ -213,10 +226,10 @@ def train():
                     mask2 = mask2.to(device)
                 
                 # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
-                (U1, _, _, _, _, _), (U2, _, _, _, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+                (U1, _, _, _, k1_final, _), (U2, _, _, _, k2_final, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
-                # Tính toán Loss đánh giá sử dụng sóng mang per-sample từ dataset
-                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
+                # Tính toán Loss đánh giá sử dụng k1_final, k2_final (FIX BUG)
+                _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1_final, k2_final, config)
                 val_loss_accum += val_loss_dict['total_loss']
                 
         avg_val_loss = val_loss_accum / len(val_loader)
@@ -241,7 +254,7 @@ def train():
         print(f"Epoch [{epoch+1}/{epochs}] - "
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
               f"Val Loss: {avg_val_loss:.4f}\n"
-              f"   📎 Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
+              f"   📎 Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}] | Trọng số Consistency Loss: {current_lambda_cons:.4f}")
         if use_k_estimator:
             print(f"   🎯 Δk học được (batch cuối): "
                   f"Góc1=[Δkx={dk1_mean[0]:+.3f}, Δky={dk1_mean[1]:+.3f}] | "
