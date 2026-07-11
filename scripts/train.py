@@ -3,6 +3,7 @@ import sys
 import argparse
 import yaml
 import torch
+import numpy as np
 from torch.utils.data import DataLoader, random_split
 from torch.optim import Adam
 
@@ -100,12 +101,18 @@ def train():
     print(f"   - Khởi tạo k1 (góc 1): {k1_init}")
     print(f"   - Khởi tạo k2 (góc 2): {k2_init}")
 
-    # 2. Khởi tạo Mô hình Siamese Teacher
+    # 2. Khởi tạo Mô hình Siamese Teacher (bật KEstimator học sóng mang)
+    max_delta_k = config.get('model', {}).get('max_delta_k', 5.0)
+    use_k_estimator = config.get('model', {}).get('use_k_estimator', True)
     model = SiameseTeacherModel(
         filter_radius=config['data']['filter_radius'],
         k1_init=k1_init,
-        k2_init=k2_init
+        k2_init=k2_init,
+        max_delta_k=max_delta_k,
+        use_k_estimator=use_k_estimator
     ).to(device)
+    print(f"🧠 KEstimator: {'BẬT (học sóng mang tự động)' if use_k_estimator else 'TẮT (dùng k cố định từ dataset)'}")
+    print(f"   Biên độ Δk tối đa: ±{max_delta_k:.1f} pixel")
     
     # 3. Khởi tạo Optimizer
     optimizer = Adam(
@@ -166,7 +173,8 @@ def train():
             optimizer.zero_grad()
             
             # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
-            (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+            (U1, amp1, phase1, phase_rough1, k1_final, delta_k1), \
+            (U2, amp2, phase2, phase_rough2, k2_final, delta_k2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Tính toán hàm Loss sử dụng sóng mang per-sample từ dataset
             loss, loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
@@ -205,7 +213,7 @@ def train():
                     mask2 = mask2.to(device)
                 
                 # Chạy mô hình Siamese với mặt nạ thích nghi mềm (nếu có)
-                (U1, _, _, _), (U2, _, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+                (U1, _, _, _, _, _), (U2, _, _, _, _, _) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
                 
                 # Tính toán Loss đánh giá sử dụng sóng mang per-sample từ dataset
                 _, val_loss_dict = compute_total_loss(U1, U2, I1, I2, k1, k2, config)
@@ -225,11 +233,26 @@ def train():
         with torch.no_grad():
             rx_print = model.demodulator.filter_radius_x.item()
             ry_print = model.demodulator.filter_radius_y.item()
-            
+
+            # Lấy trung bình Δk của batch cuối cùng để monitor
+            dk1_mean = delta_k1.mean(dim=0).cpu().numpy()   # [2]
+            dk2_mean = delta_k2.mean(dim=0).cpu().numpy()   # [2]
+
         print(f"Epoch [{epoch+1}/{epochs}] - "
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
               f"Val Loss: {avg_val_loss:.4f}\n"
-              f"   📎 Tham số học được: Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
+              f"   📎 Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}]")
+        if use_k_estimator:
+            print(f"   🎯 Δk học được (batch cuối): "
+                  f"Góc1=[Δkx={dk1_mean[0]:+.3f}, Δky={dk1_mean[1]:+.3f}] | "
+                  f"Góc2=[Δkx={dk2_mean[0]:+.3f}, Δky={dk2_mean[1]:+.3f}]")
+
+        # Ghi Δk vào TensorBoard (nếu có)
+        if writer and use_k_estimator:
+            writer.add_scalar("DeltaK/Branch1_kx", dk1_mean[0], epoch)
+            writer.add_scalar("DeltaK/Branch1_ky", dk1_mean[1], epoch)
+            writer.add_scalar("DeltaK/Branch2_kx", dk2_mean[0], epoch)
+            writer.add_scalar("DeltaK/Branch2_ky", dk2_mean[1], epoch)
               
         # 7. Lưu trữ Checkpoint
         checkpoint_data = {

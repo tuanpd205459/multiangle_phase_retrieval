@@ -112,7 +112,8 @@ def evaluate():
                 mask2 = mask2.to(device)
                 
             # Khôi phục trường sóng phức
-            (U1, amp1, phase1, phase_rough1), (U2, amp2, phase2, phase_rough2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
+            (U1, amp1, phase1, phase_rough1, k1_final, delta_k1), \
+            (U2, amp2, phase2, phase_rough2, k2_final, delta_k2) = model(I1, k1, I2, k2, mask1=mask1, mask2=mask2)
             
             # Tính toán Hologram tái tạo (Reconstructed Hologram) để kiểm chứng vật lý
             B, C, H, W = U1.shape
@@ -146,8 +147,17 @@ def evaluate():
                     'phase1': phi_pred,
                     'phase_rough1': phase_rough1[0, 0].cpu().numpy(),
                     'phase_rough2': phase_rough2[0, 0].cpu().numpy(),
-                    'kx1': k1[0, 0].item(),
-                    'ky1': k1[0, 1].item()
+                    # K thô từ dataset
+                    'kx1_dataset': k1[0, 0].item(),
+                    'ky1_dataset': k1[0, 1].item(),
+                    # K cuối cùng sau khi cộng Δk học được
+                    'kx1_final': k1_final[0, 0].item(),
+                    'ky1_final': k1_final[0, 1].item(),
+                    # Δk học được
+                    'delta_kx1': delta_k1[0, 0].item(),
+                    'delta_ky1': delta_k1[0, 1].item(),
+                    'delta_kx2': delta_k2[0, 0].item(),
+                    'delta_ky2': delta_k2[0, 1].item(),
                 }
                 
                 # Nếu là dữ liệu giả lập, lưu thêm pha nhãn Ground Truth (được quấn về [-pi, pi])
