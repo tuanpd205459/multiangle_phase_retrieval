@@ -101,11 +101,7 @@ class SiameseTeacherModel(nn.Module):
         """
         branch1 = self.forward_single_branch(I1, k1, mask_override=mask1)
         branch2 = self.forward_single_branch(I2, k2, mask_override=mask2)
-        return branch1, branch2 sạch ----
-        amplitude = torch.abs(U_refined)
-        phase = torch.angle(U_refined)
-
-        return U_refined, amplitude, phase, phase_rough, k_final, delta_k
+        return branch1, branch2
 
     def forward(self, I1, k1, I2, k2, mask1=None, mask2=None):
         """
