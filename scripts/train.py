@@ -101,18 +101,11 @@ def train():
     print(f"   - Khởi tạo k1 (góc 1): {k1_init}")
     print(f"   - Khởi tạo k2 (góc 2): {k2_init}")
 
-    # 2. Khởi tạo Mô hình Siamese Teacher (bật KEstimator học sóng mang)
-    max_delta_k = config.get('model', {}).get('max_delta_k', 5.0)
-    use_k_estimator = config.get('model', {}).get('use_k_estimator', True)
+    # 2. Khởi tạo Mô hình Siamese Teacher (Spectral Centroid thành phần của Demodulator)
     model = SiameseTeacherModel(
-        filter_radius=config['data']['filter_radius'],
-        k1_init=k1_init,
-        k2_init=k2_init,
-        max_delta_k=max_delta_k,
-        use_k_estimator=use_k_estimator
+        filter_radius=config['data']['filter_radius']
     ).to(device)
-    print(f"🧠 KEstimator: {'BẬT (học sóng mang tự động)' if use_k_estimator else 'TẮT (dùng k cố định từ dataset)'}")
-    print(f"   Biên độ Δk tối đa: ±{max_delta_k:.1f} pixel")
+    print(f"🧠 Kiến trúc: Siamese + Spectral Centroid Correction (không có KEstimator CNN)")
     
     # 3. Khởi tạo Optimizer
     optimizer = Adam(
@@ -255,13 +248,12 @@ def train():
               f"Train Loss: {avg_train_loss:.4f} (Phys: {avg_train_phys:.4f}, Cons: {avg_train_cons:.4f}, TV: {avg_train_tv:.4f}) | "
               f"Val Loss: {avg_val_loss:.4f}\n"
               f"   📎 Filter Radius=[Rx={rx_print:.2f}, Ry={ry_print:.2f}] | Trọng số Consistency Loss: {current_lambda_cons:.4f}")
-        if use_k_estimator:
-            print(f"   🎯 Δk học được (batch cuối): "
-                  f"Góc1=[Δkx={dk1_mean[0]:+.3f}, Δky={dk1_mean[1]:+.3f}] | "
-                  f"Góc2=[Δkx={dk2_mean[0]:+.3f}, Δky={dk2_mean[1]:+.3f}]")
+        print(f"   🎯 Δk từ Spectral Centroid (batch cuối): "
+              f"Góc1=[Δkx={dk1_mean[0]:+.3f}, Δky={dk1_mean[1]:+.3f}] | "
+              f"Góc2=[Δkx={dk2_mean[0]:+.3f}, Δky={dk2_mean[1]:+.3f}]")
 
-        # Ghi Δk vào TensorBoard (nếu có)
-        if writer and use_k_estimator:
+        # Ghi Δk vào TensorBoard
+        if writer:
             writer.add_scalar("DeltaK/Branch1_kx", dk1_mean[0], epoch)
             writer.add_scalar("DeltaK/Branch1_ky", dk1_mean[1], epoch)
             writer.add_scalar("DeltaK/Branch2_kx", dk2_mean[0], epoch)

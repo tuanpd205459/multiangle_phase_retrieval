@@ -21,11 +21,8 @@ train:
   val_split: 0.1
   seed: 42
 
-# Cấu hình Mô hình (Model Architecture)
-model:
-  use_k_estimator: true      # Bật module học sóng mang tự động (KEstimator)
-  max_delta_k: 5.0           # Biên độ Δk tối đa (pixel) mà KEstimator được phép học
-                             # Tăng nếu sóng mang bị lệch nhiều, giảm để ổn định hơn
+# Ghi chú: KEstimator CNN đã được thay thế bằng Spectral Centroid trong Demodulator.
+# Không còn tham số model nào cần cấu hình cho việc ước lượng sóng mang.
 
 # Trọng số của các hàm Loss (Loss weights)
 loss:

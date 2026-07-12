@@ -7,12 +7,22 @@ class DifferentiableDemodulator(nn.Module):
     """
     Bộ giải điều chế khả vi (Differentiable Demodulator) thực hiện dịch phổ và lọc thông thấp.
     
-    Để kx và ky có thể tối ưu hóa liên tục ở cấp độ sub-pixel bằng Gradient Descent,
-    phép dịch phổ Fourier được thực hiện thông qua nhân pha tuyến tính ở miền không gian:
-        I_shifted(x,y) = I(x,y) * exp(-i * 2*pi * (kx*x/W + ky*y/H))
-    
-    Sau đó, đưa sang miền Fourier để áp dụng bộ lọc thông thấp (low-pass filter) hình chữ nhật mềm
-    để lọc lấy trường sóng phức vật thể U_demod.
+    Luồng xử lý (2 bước):
+        Bước 1 — Dịch phổ sơ bộ với k_dataset:
+            I_shifted = I * exp(-i*2π*(kx*x/W + ky*y/H))
+            → FFT → búp phổ +1 gần tâm nhưng có thể lệch Δk
+
+        Bước 2 — Spectral Centroid Correction (thay thế KEstimator CNN):
+            Tính trọng tâm (centroid) của phổ công suất trong vùng lọc:
+                cx = Σ(fx * |FFT*mask|²) / Σ(|FFT*mask|²)
+            cx, cy chính là Δk tuyệt đối trong hệ tọa độ Fourier.
+            → k_final = k_dataset + (cx, cy)
+            → Làm lại dịch phổ với k_final → búp phổ về đúng tâm (0,0)
+
+        Ưu điểm so với KEstimator CNN:
+            - Không cần học, tính được ngay từ vật lý
+            - Tham chiếu tọa độ Fourier tuyệt đối → phá vỡ Gauge Ambiguity
+            - Khả vi hoàn toàn (centroid là phép tính đại số)
 
     Kích thước bộ lọc (rx, ry) có thể:
       - Dùng giá trị mặc định toàn cục (chế độ synthetic / huấn luyện)
@@ -27,11 +37,15 @@ class DifferentiableDemodulator(nn.Module):
     def forward(self, I, kx, ky, rx_override=None, ry_override=None, mask_override=None):
         """
         I:             Tensor hologram cường độ [B, 1, H, W]
-        kx, ky:        Tần số sóng mang [B] (pixel lệch so với tâm DC)
-        rx_override:   Bán kính bộ lọc X (fallback nếu không truyền mask_override)
-        ry_override:   Bán kính bộ lọc Y (fallback nếu không truyền mask_override)
-        mask_override: Tensor [B, 1, H, W] chứa mặt nạ lọc thích nghi đã làm mịn (Gaussian window)
-                       tương thích đúng ý dạng búp phổ thực tế.
+        kx, ky:        Tần số sóng mang sơ bộ từ dataset [B]
+        rx_override:   Bán kính bộ lọc X per-sample (tuỳ chọn)
+        ry_override:   Bán kính bộ lọc Y per-sample (tuỳ chọn)
+        mask_override: Tensor [B, 1, H, W] mặt nạ lọc thích nghi (tuỳ chọn)
+
+        Returns:
+            U_demod:   Trường sóng phức đã giải điều chế [B, 1, H, W]
+            delta_k:   Độ lệch sóng mang tính từ Spectral Centroid [B, 2]
+            k_final:   Sóng mang cuối = k_dataset + delta_k [B, 2]
         """
         B, C, H, W = I.shape
         device = I.device
@@ -46,20 +60,18 @@ class DifferentiableDemodulator(nn.Module):
         kx_exp = kx.view(B, 1, 1, 1)
         ky_exp = ky.view(B, 1, 1, 1)
 
-        # 2. Dịch phổ về tâm (Fourier Shift Theorem)
+        # 2. Bước 1: Dịch phổ sơ bộ với k_dataset
         phase_shift = -2.0 * np.pi * (kx_exp * mesh_x_exp / W + ky_exp * mesh_y_exp / H)
         exp_shift = torch.complex(torch.cos(phase_shift), torch.sin(phase_shift))
         I_complex_shifted = I.to(torch.complex64) * exp_shift
 
-        # 3. FFT → bậc +1 giờ nằm tại tâm (H//2, W//2)
+        # 3. FFT sơ bộ → búp phổ +1 gần tâm (H//2, W//2) nhưng có thể lệch Δk
         I_fft = fft.fftshift(fft.fft2(I_complex_shifted), dim=(-2, -1))
 
-        # 4. Áp dụng bộ lọc
+        # 4. Tạo bộ lọc (mask) xung quanh tâm
         if mask_override is not None:
-            # Sử dụng trực tiếp mặt nạ thích nghi mềm (Gaussian Window)
             mask = mask_override.to(device)
         else:
-            # Fallback dùng bộ lọc hình chữ nhật mềm nếu không có mask_override
             if rx_override is not None:
                 rx = torch.as_tensor(rx_override, dtype=torch.float32, device=device).view(B, 1, 1, 1)
                 rx = torch.clamp(rx, min=5.0)
@@ -82,12 +94,52 @@ class DifferentiableDemodulator(nn.Module):
             mask_y = torch.sigmoid((ry - y_abs) / temperature)
             mask = mask_x * mask_y
 
-        I_fft_filtered = I_fft * mask
+        # =====================================================================
+        # SPECTRAL CENTROID CORRECTION (thay thế KEstimator CNN)
+        # Đo vị trí chính xác của búp phổ +1 trong miền Fourier → tính Δk
+        # Centroid tham chiếu tọa độ Fourier tuyệt đối → phá vỡ Gauge Ambiguity
+        # =====================================================================
+        power = torch.abs(I_fft * mask) ** 2  # Phổ công suất trong vùng lọc [B,1,H,W]
 
-        # 5. IFFT → trường sóng phức đã giải điều chế
+        # Lưới tần số centered: -H/2 → H/2-1 (đơn vị pixel trong FFT)
+        fy = torch.arange(-H//2, H//2, dtype=torch.float32, device=device).view(1, 1, H, 1)
+        fx = torch.arange(-W//2, W//2, dtype=torch.float32, device=device).view(1, 1, 1, W)
+
+        total_power = power.sum(dim=(-2, -1), keepdim=True) + 1e-8
+        centroid_x  = (power * fx).sum(dim=(-2, -1), keepdim=True) / total_power  # [B,1,1,1]
+        centroid_y  = (power * fy).sum(dim=(-2, -1), keepdim=True) / total_power
+
+        # Δk = offset của centroid so với tâm (0,0)
+        delta_kx = centroid_x.view(B)   # [B]
+        delta_ky = centroid_y.view(B)   # [B]
+
+        # k_final = k_dataset + Δk → kéo búp phổ về đúng tâm (0,0)
+        kx_final = kx + delta_kx
+        ky_final = ky + delta_ky
+
+        # Bước 2: Làm lại dịch phổ với k_final
+        kx_final_exp = kx_final.view(B, 1, 1, 1)
+        ky_final_exp = ky_final.view(B, 1, 1, 1)
+
+        phase_shift_final = -2.0 * np.pi * (kx_final_exp * mesh_x_exp / W + ky_final_exp * mesh_y_exp / H)
+        exp_shift_final   = torch.complex(torch.cos(phase_shift_final), torch.sin(phase_shift_final))
+        I_complex_final   = I.to(torch.complex64) * exp_shift_final
+
+        # FFT lần 2 — búp phổ +1 bây giờ nằm đúng tâm (0,0)
+        I_fft_final = fft.fftshift(fft.fft2(I_complex_final), dim=(-2, -1))
+        # =====================================================================
+
+        # 5. Áp dụng bộ lọc vào FFT đã hiệu chỉnh
+        I_fft_filtered = I_fft_final * mask
+
+        # 6. IFFT → trường sóng phức đã giải điều chế
         U_demod = fft.ifft2(fft.ifftshift(I_fft_filtered, dim=(-2, -1)))
 
-        return U_demod
+        # Đóng gói delta_k và k_final thành tensor [B, 2] để trả về
+        delta_k = torch.stack([delta_kx, delta_ky], dim=1)  # [B, 2]
+        k_final = torch.stack([kx_final, ky_final], dim=1)  # [B, 2]
+
+        return U_demod, delta_k, k_final
 
 # ==============================================================================
 # BẢN KIỂM TRA CHỨC NĂNG (TEST RUN)
