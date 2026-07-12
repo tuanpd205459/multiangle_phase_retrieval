@@ -127,12 +127,13 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         sidebands = []
         
     if len(sidebands) > 0:
-        # Chọn búp ở nửa bên TRÁI (centroid_x < cx) để kx < 0
-        left_sidebands = [c for c in sidebands if c['centroid'][0] < cx]
-        if len(left_sidebands) > 0:
-            target_comp = max(left_sidebands, key=lambda c: c['area'])
+        # Chọn búp ở nửa NỬA TRÊN (centroid_y < cy)
+        # Búp chính (+1 order) thường nằm ở nửa trên của phổ nếu góc nghiêng quay quanh trục
+        top_sidebands = [c for c in sidebands if c['centroid'][1] < cy]
+        if len(top_sidebands) > 0:
+            target_comp = max(top_sidebands, key=lambda c: c['area'])
         else:
-            target_comp = min(sidebands, key=lambda c: c['centroid'][0])
+            target_comp = min(sidebands, key=lambda c: c['centroid'][1])
         
         # Centroid búp từ bước 2 (dùng để định vị)
         target_cx, target_cy = target_comp['centroid']
@@ -165,8 +166,8 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         X_grid, Y_grid = np.meshgrid(x_coords, y_coords)
         dist_from_dc = np.sqrt((X_grid - cx)**2 + (Y_grid - cy)**2)
         search_amp[dist_from_dc < 15] = 0
-        # Chỉ tìm ở nửa bên TRÁI (kx < 0)
-        search_amp[:, cx:] = 0
+        # Chỉ tìm ở nửa TRÊN (ky < 0 tức là y < cy)
+        search_amp[cy:, :] = 0
         max_idx = np.argmax(search_amp)
         py_peak, px_peak = np.unravel_index(max_idx, search_amp.shape)
         px, py = float(px_peak), float(py_peak)

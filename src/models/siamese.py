@@ -37,9 +37,10 @@ class SiameseTeacherModel(nn.Module):
                  filter_radius: float = 50.0):
         super(SiameseTeacherModel, self).__init__()
 
-        # Khởi tạo bán kính bộ lọc ellipse
-        filter_radius_x = filter_radius * 0.4
-        filter_radius_y = filter_radius * 1.2
+        # Khởi tạo bán kính bộ lọc tròn cố định (cùng 1 radius cho cả x và y)
+        # Bỏ đi tỷ lệ ellipse (0.4 và 1.2) cũ
+        filter_radius_x = filter_radius
+        filter_radius_y = filter_radius
 
         # Module giải điều chế khả vi (tích hợp Spectral Centroid Correction)
         self.demodulator = DifferentiableDemodulator(
@@ -77,7 +78,8 @@ class SiameseTeacherModel(nn.Module):
         ky = k_param[:, 1]
 
         # Demodulator: dịch phổ sơ bộ → Spectral Centroid → hiệu chỉnh k → IFFT
-        U_rough, delta_k, k_final = self.demodulator(I, kx, ky, mask_override=mask_override)
+        # KHÔNG DÙNG mask_override để ép bộ giải điều chế dùng rx, ry cố định
+        U_rough, delta_k, k_final = self.demodulator(I, kx, ky, mask_override=None)
 
         # Pha sơ bộ (kết quả của Demodulator đã hiệu chỉnh)
         phase_rough = torch.angle(U_rough)  # [B, 1, H, W]
