@@ -127,14 +127,14 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         sidebands = []
         
     if len(sidebands) > 0:
-        # Chọn búp +1 ở nửa bên phải (centroid_x > cx)
-        right_sidebands = [c for c in sidebands if c['centroid'][0] > cx]
-        if len(right_sidebands) > 0:
-            target_comp = max(right_sidebands, key=lambda c: c['area'])
+        # Chọn búp ở nửa bên TRÁI (centroid_x < cx) để kx < 0
+        left_sidebands = [c for c in sidebands if c['centroid'][0] < cx]
+        if len(left_sidebands) > 0:
+            target_comp = max(left_sidebands, key=lambda c: c['area'])
         else:
-            target_comp = max(sidebands, key=lambda c: c['centroid'][0])
+            target_comp = min(sidebands, key=lambda c: c['centroid'][0])
         
-        # Centroid búp +1 từ bước 2 (dùng để định vị)
+        # Centroid búp từ bước 2 (dùng để định vị)
         target_cx, target_cy = target_comp['centroid']
         
         # BƯỚC 3: Quay lại ảnh nhị phân bước 1 → tìm vùng chứa centroid búp +1
@@ -165,8 +165,8 @@ def fourier_region_recognition(I, min_area=30, margin=5.0):
         X_grid, Y_grid = np.meshgrid(x_coords, y_coords)
         dist_from_dc = np.sqrt((X_grid - cx)**2 + (Y_grid - cy)**2)
         search_amp[dist_from_dc < 15] = 0
-        # Chỉ tìm ở nửa bên phải
-        search_amp[:, :cx] = 0
+        # Chỉ tìm ở nửa bên TRÁI (kx < 0)
+        search_amp[:, cx:] = 0
         max_idx = np.argmax(search_amp)
         py_peak, px_peak = np.unravel_index(max_idx, search_amp.shape)
         px, py = float(px_peak), float(py_peak)
@@ -309,8 +309,9 @@ def generate_hologram_pair_realistic(phi, H, W, rng, noise_level=0.03, objective
     A_beam = np.exp(-((X - W/2)**2 + (Y - H/2)**2) / (2 * sigma_beam**2))
     
     # 4. Sóng mang sub-pixel ngẫu nhiên (Sub-pixel Carrier Frequencies)
-    # kx1 dương (phải), kx2 âm (trái)
-    kx1 = rng.uniform(35.2, 49.8) 
+    # ÉP BUỘC: Cả kx1 và kx2 ĐỀU PHẢI ÂM (trái) để khi trích xuất búp trái, 
+    # cả 2 góc đều ra pha thật (tránh hiện tượng 1 góc ra pha thật, 1 góc ra pha liên hợp)
+    kx1 = rng.uniform(-49.8, -35.2) 
     kx2 = rng.uniform(-49.8, -35.2)
     
     # ky1 và ky2 có thể âm hoặc dương tự do, trải đều góc phần tư I và IV (hoặc II và III)
